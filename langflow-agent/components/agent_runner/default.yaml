@@ -1,0 +1,75 @@
+apiVersion: langbot/v1
+kind: AgentRunner
+metadata:
+  name: default
+  label:
+    en_US: Default
+    zh_Hans: 默认
+  description:
+    en_US: Run a Langflow flow as a LangBot AgentRunner.
+    zh_Hans: 将 Langflow 流程作为 LangBot AgentRunner 运行。
+spec:
+  protocol_version: "1"
+  config:
+    - name: base-url
+      label:
+        en_US: Base URL
+        zh_Hans: 基础 URL
+      type: string
+      required: true
+      default: 'http://localhost:7860'
+    - name: api-key
+      label:
+        en_US: API Key
+        zh_Hans: API 密钥
+      type: string
+      required: true
+      default: ''
+    - name: flow-id
+      label:
+        en_US: Flow ID
+        zh_Hans: 流程 ID
+      type: string
+      required: true
+      default: ''
+    - name: input-type
+      label:
+        en_US: Input Type
+        zh_Hans: 输入类型
+      type: string
+      required: false
+      default: 'chat'
+    - name: output-type
+      label:
+        en_US: Output Type
+        zh_Hans: 输出类型
+      type: string
+      required: false
+      default: 'chat'
+    - name: tweaks
+      label:
+        en_US: Tweaks
+        zh_Hans: 调整参数
+      type: json
+      required: false
+      default: '{}'
+  capabilities:
+    streaming: false
+    tool_calling: false
+    knowledge_retrieval: false
+    multimodal_input: false
+    event_context: false
+    platform_api: false
+    interrupt: false
+    stateful_session: true
+  permissions:
+    models: []
+    tools: []
+    knowledge_bases: []
+    storage: ["plugin"]
+    files: []
+    platform_api: []
+execution:
+  python:
+    path: default.py
+    attr: DefaultAgentRunner

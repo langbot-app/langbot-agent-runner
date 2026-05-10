@@ -1,0 +1,120 @@
+apiVersion: langbot/v1
+kind: AgentRunner
+metadata:
+  name: default
+  label:
+    en_US: Default
+    zh_Hans: 默认
+  description:
+    en_US: Run an n8n workflow webhook as a LangBot AgentRunner.
+    zh_Hans: 将 n8n 工作流 webhook 作为 LangBot AgentRunner 运行。
+spec:
+  protocol_version: "1"
+  config:
+    - name: webhook-url
+      label:
+        en_US: Webhook URL
+        zh_Hans: Webhook URL
+      type: string
+      required: true
+      default: ''
+    - name: auth-type
+      label:
+        en_US: Authentication Type
+        zh_Hans: 认证类型
+      type: select
+      required: true
+      default: 'none'
+      options:
+        - name: 'none'
+          label:
+            en_US: None
+            zh_Hans: 无认证
+        - name: 'basic'
+          label:
+            en_US: Basic Auth
+            zh_Hans: 基本认证
+        - name: 'jwt'
+          label:
+            en_US: JWT
+            zh_Hans: JWT认证
+        - name: 'header'
+          label:
+            en_US: Header Auth
+            zh_Hans: 请求头认证
+    - name: basic-username
+      label:
+        en_US: Username
+        zh_Hans: 用户名
+      type: string
+      required: false
+      default: ''
+    - name: basic-password
+      label:
+        en_US: Password
+        zh_Hans: 密码
+      type: string
+      required: false
+      default: ''
+    - name: jwt-secret
+      label:
+        en_US: Secret
+        zh_Hans: 密钥
+      type: string
+      required: false
+      default: ''
+    - name: jwt-algorithm
+      label:
+        en_US: Algorithm
+        zh_Hans: 算法
+      type: string
+      required: false
+      default: 'HS256'
+    - name: header-name
+      label:
+        en_US: Header Name
+        zh_Hans: 请求头名称
+      type: string
+      required: false
+      default: ''
+    - name: header-value
+      label:
+        en_US: Header Value
+        zh_Hans: 请求头值
+      type: string
+      required: false
+      default: ''
+    - name: timeout
+      label:
+        en_US: Timeout
+        zh_Hans: 超时时间
+      type: integer
+      required: false
+      default: 120
+    - name: output-key
+      label:
+        en_US: Output Key
+        zh_Hans: 输出键名
+      type: string
+      required: false
+      default: 'response'
+  capabilities:
+    streaming: false
+    tool_calling: false
+    knowledge_retrieval: false
+    multimodal_input: false
+    event_context: false
+    platform_api: false
+    interrupt: false
+    stateful_session: true
+  permissions:
+    models: []
+    tools: []
+    knowledge_bases: []
+    storage: ["plugin"]
+    files: []
+    platform_api: []
+execution:
+  python:
+    path: default.py
+    attr: DefaultAgentRunner

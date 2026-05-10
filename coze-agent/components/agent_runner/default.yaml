@@ -1,0 +1,77 @@
+apiVersion: langbot/v1
+kind: AgentRunner
+metadata:
+  name: default
+  label:
+    en_US: Default
+    zh_Hans: 默认
+  description:
+    en_US: Run a Coze bot as a LangBot AgentRunner.
+    zh_Hans: 将扣子机器人作为 LangBot AgentRunner 运行。
+spec:
+  protocol_version: "1"
+  config:
+    - name: api-key
+      label:
+        en_US: API Key
+        zh_Hans: API 密钥
+      type: string
+      required: true
+      default: ''
+    - name: bot-id
+      label:
+        en_US: Bot ID
+        zh_Hans: 机器人 ID
+      type: string
+      required: true
+      default: ''
+    - name: api-base
+      label:
+        en_US: API Base URL
+        zh_Hans: API 基础 URL
+      type: select
+      required: true
+      default: "https://api.coze.cn"
+      options:
+        - name: 'https://api.coze.cn'
+          label:
+            en_US: Coze China
+            zh_Hans: Coze 中国版
+        - name: 'https://api.coze.com'
+          label:
+            en_US: Coze Global
+            zh_Hans: Coze 全球版
+    - name: auto-save-history
+      label:
+        en_US: Auto Save History
+        zh_Hans: 自动保存历史
+      type: boolean
+      required: false
+      default: true
+    - name: timeout
+      label:
+        en_US: Request Timeout
+        zh_Hans: 请求超时
+      type: number
+      required: false
+      default: 120
+  capabilities:
+    streaming: true
+    tool_calling: false
+    knowledge_retrieval: false
+    multimodal_input: true
+    event_context: false
+    platform_api: false
+    interrupt: false
+    stateful_session: true
+  permissions:
+    models: []
+    tools: []
+    knowledge_bases: []
+    storage: ["plugin"]
+    files: []
+    platform_api: []
+execution:
+  python:
+    path: default.py
+    attr: DefaultAgentRunner

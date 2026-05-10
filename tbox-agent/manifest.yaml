@@ -1,0 +1,24 @@
+apiVersion: langbot/v1
+kind: Plugin
+metadata:
+  author: langbot
+  name: tbox-agent
+  label:
+    en_US: Tbox Agent
+    zh_Hans: 百宝箱 Agent
+  description:
+    en_US: Run an Ant Tbox application as a LangBot AgentRunner.
+    zh_Hans: 将蚂蚁百宝箱应用作为 LangBot AgentRunner 运行。
+  icon: assets/icon.svg
+spec:
+  version: 0.1.0
+  config: []
+  components:
+    AgentRunner:
+      fromDirs:
+        - path: components/agent_runner/
+  pages: []
+execution:
+  python:
+    path: main.py
+    attr: TboxAgentPlugin

@@ -1,0 +1,47 @@
+apiVersion: langbot/v1
+kind: AgentRunner
+metadata:
+  name: default
+  label:
+    en_US: Default
+    zh_Hans: 默认
+  description:
+    en_US: Run an Ant Tbox application as a LangBot AgentRunner.
+    zh_Hans: 将蚂蚁百宝箱应用作为 LangBot AgentRunner 运行。
+spec:
+  protocol_version: "1"
+  config:
+    - name: api-key
+      label:
+        en_US: API Key
+        zh_Hans: API 密钥
+      type: string
+      required: true
+      default: ''
+    - name: app-id
+      label:
+        en_US: App ID
+        zh_Hans: 应用 ID
+      type: string
+      required: true
+      default: ''
+  capabilities:
+    streaming: false
+    tool_calling: false
+    knowledge_retrieval: false
+    multimodal_input: false
+    event_context: false
+    platform_api: false
+    interrupt: false
+    stateful_session: true
+  permissions:
+    models: []
+    tools: []
+    knowledge_bases: []
+    storage: ["plugin"]
+    files: []
+    platform_api: []
+execution:
+  python:
+    path: default.py
+    attr: DefaultAgentRunner

@@ -1,0 +1,79 @@
+apiVersion: langbot/v1
+kind: AgentRunner
+metadata:
+  name: default
+  label:
+    en_US: Default
+    zh_Hans: 默认
+  description:
+    en_US: Built-in agent with model fallback, tools, and knowledge retrieval.
+    zh_Hans: 内置 Agent，支持模型 fallback、工具调用和知识库检索。
+spec:
+  protocol_version: "1"
+  config:
+    - name: model
+      label:
+        en_US: Model
+        zh_Hans: 模型
+      type: model-fallback-selector
+      required: true
+      default:
+        primary: ''
+        fallbacks: []
+    - name: max-round
+      label:
+        en_US: Max Round
+        zh_Hans: 最大回合数
+      type: integer
+      required: true
+      default: 10
+    - name: prompt
+      label:
+        en_US: Prompt
+        zh_Hans: 提示词
+      type: prompt-editor
+      required: true
+      default:
+        - role: system
+          content: "You are a helpful assistant."
+    - name: knowledge-bases
+      label:
+        en_US: Knowledge Bases
+        zh_Hans: 知识库
+      type: knowledge-base-multi-selector
+      required: false
+      default: []
+    - name: rerank-model
+      label:
+        en_US: Rerank Model
+        zh_Hans: 重排序模型
+      type: rerank-model-selector
+      required: false
+      default: ''
+    - name: rerank-top-k
+      label:
+        en_US: Rerank Top K
+        zh_Hans: 重排序保留数量
+      type: integer
+      required: false
+      default: 5
+  capabilities:
+    streaming: true
+    tool_calling: true
+    knowledge_retrieval: true
+    multimodal_input: true
+    event_context: false
+    platform_api: false
+    interrupt: false
+    stateful_session: true
+  permissions:
+    models: ["list", "invoke", "stream"]
+    tools: ["list", "detail", "call"]
+    knowledge_bases: ["list", "retrieve"]
+    storage: ["plugin"]
+    files: ["config", "knowledge"]
+    platform_api: []
+execution:
+  python:
+    path: default.py
+    attr: DefaultAgentRunner
