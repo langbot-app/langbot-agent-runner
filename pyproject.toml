@@ -19,6 +19,9 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "ruff>=0.4.0",
     "pyyaml>=6.0.0",
+    "respx>=0.21.0",
+    "aiohttp>=3.9.0",
+    "socksio>=1.0.0",
 ]
 
 [dependency-groups]
@@ -27,6 +30,9 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "ruff>=0.4.0",
     "pyyaml>=6.0.0",
+    "respx>=0.21.0",
+    "aiohttp>=3.9.0",
+    "socksio>=1.0.0",
 ]
 
 [tool.ruff]
@@ -50,4 +56,4 @@ packages = ["_shared/langbot_agent_runner_utils"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-pythonpath = [".", "../langbot-plugin-sdk/src"]
+pythonpath = [".", "dify-agent", "_shared", "../langbot-plugin-sdk/src"]

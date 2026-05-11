@@ -188,11 +188,11 @@ spec:
     platform_api: []
 execution:
   python:
-    path: ./main.py
+    path: default.py
     attr: DefaultAgentRunner
 ```
 
-`main.py` 入口示例：
+`components/agent_runner/default.py` 入口示例：
 
 ```python
 from langbot_plugin.api.definition.components import AgentRunner
