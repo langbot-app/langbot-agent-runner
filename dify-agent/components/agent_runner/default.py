@@ -10,7 +10,7 @@ import logging
 import typing
 import uuid
 
-from langbot_agent_runner_utils.dify_client import (
+from pkg.dify_client import (
     AsyncDifyClient,
     DifyAPIError,
     DifyConfigError,
