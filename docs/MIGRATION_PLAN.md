@@ -250,6 +250,8 @@ class DefaultAgentRunner(AgentRunner):
 
 ### Phase 0：仓库脚手架
 
+**状态**: ✅ 完成
+
 交付：
 
 - 根 `README.md`
@@ -266,6 +268,8 @@ class DefaultAgentRunner(AgentRunner):
 - 所有 stub runner 都能执行 `RUN_AGENT` 并返回 `message.completed` + `run.completed`。
 
 ### Phase 1：Dify 垂直切片
+
+**状态**: ✅ 完成
 
 先迁 `dify-agent`，用它验证外部平台 runner 的完整开发模式。
 
@@ -290,6 +294,8 @@ class DefaultAgentRunner(AgentRunner):
 
 ### Phase 2：外部 workflow runner
 
+**状态**: ✅ 完成
+
 并行迁移：
 
 - `n8n-agent`
@@ -313,6 +319,8 @@ Langflow 要求：
 - conversation id 生成和传递有测试。
 
 ### Phase 3：平台 Agent API runner
+
+**状态**: ✅ 完成
 
 并行迁移：
 
@@ -345,6 +353,8 @@ Tbox 要求：
 - 支持流式的平台必须测试 `message.delta`。
 
 ### Phase 4：Local Agent
+
+**状态**: ✅ 完成
 
 `local-agent` 是最复杂的迁移。它应最后作为能力完整性收口，也可以在 Phase 1 后单独开 worker 并行推进。
 
