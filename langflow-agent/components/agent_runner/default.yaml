@@ -54,7 +54,7 @@ spec:
       required: false
       default: '{}'
   capabilities:
-    streaming: false
+    streaming: true
     tool_calling: false
     knowledge_retrieval: false
     multimodal_input: false
