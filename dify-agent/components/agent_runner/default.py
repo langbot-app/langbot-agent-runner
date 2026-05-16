@@ -5,18 +5,12 @@ Real Dify Service API integration supporting chat, agent, and workflow app types
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import typing
 import uuid
 
-from pkg.dify_client import (
-    AsyncDifyClient,
-    DifyAPIError,
-    DifyConfigError,
-    extract_text_from_output,
-    process_thinking_content,
-)
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
@@ -24,8 +18,72 @@ from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunResult,
 )
 from langbot_plugin.api.entities.builtin.provider.message import MessageChunk
+from pkg.dify_client import (
+    AsyncDifyClient,
+    DifyAPIError,
+    DifyConfigError,
+    extract_text_from_output,
+    process_thinking_content,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _attachment_get(attachment: typing.Any, key: str, default: typing.Any = None) -> typing.Any:
+    if isinstance(attachment, dict):
+        return attachment.get(key, default)
+    return getattr(attachment, key, default)
+
+
+def _content_get(content: typing.Any, key: str, default: typing.Any = None) -> typing.Any:
+    if isinstance(content, dict):
+        return content.get(key, default)
+    return getattr(content, key, default)
+
+
+def _content_type_from_base64(value: typing.Any, default: str) -> str:
+    if isinstance(value, str) and value.startswith("data:") and ";base64," in value:
+        return value[5:value.find(";base64,")] or default
+    return default
+
+
+def _decode_content(value: typing.Any) -> bytes | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, str):
+        payload = value.split(",", 1)[1] if value.startswith("data:") and "," in value else value
+        try:
+            return base64.b64decode(payload, validate=True)
+        except Exception:
+            return value.encode("utf-8")
+    return None
+
+
+def _attachments_from_contents(contents: list[typing.Any]) -> list[dict[str, typing.Any]]:
+    attachments: list[dict[str, typing.Any]] = []
+    for item in contents or []:
+        item_type = _content_get(item, "type")
+        if item_type == "image_base64":
+            content = _content_get(item, "image_base64")
+            attachments.append({
+                "type": "image",
+                "name": "image",
+                "content": content,
+                "content_type": _content_type_from_base64(content, "image/jpeg"),
+            })
+        elif item_type == "file_base64":
+            content = _content_get(item, "file_base64")
+            attachments.append({
+                "type": "file",
+                "name": _content_get(item, "file_name") or "file",
+                "content": content,
+                "content_type": _content_type_from_base64(content, "application/octet-stream"),
+            })
+    return attachments
 
 
 class DefaultAgentRunner(AgentRunner):
@@ -139,14 +197,18 @@ class DefaultAgentRunner(AgentRunner):
         """
         uploaded_files: list[dict[str, typing.Any]] = []
 
-        for attachment in ctx.input.attachments:
+        attachments = list(ctx.input.attachments or [])
+        if not any(_attachment_get(attachment, "content") for attachment in attachments):
+            attachments.extend(_attachments_from_contents(ctx.input.contents))
+
+        for attachment in attachments:
             try:
-                file_bytes = attachment.content
+                file_bytes = _decode_content(_attachment_get(attachment, "content"))
                 if not file_bytes:
                     continue
 
-                file_name = attachment.name or "file"
-                content_type = attachment.content_type or "application/octet-stream"
+                file_name = _attachment_get(attachment, "name") or "file"
+                content_type = _attachment_get(attachment, "content_type") or "application/octet-stream"
 
                 # Determine Dify file type from content type
                 if content_type.startswith("image/"):
@@ -168,7 +230,7 @@ class DefaultAgentRunner(AgentRunner):
                         "upload_file_id": file_id,
                     })
             except Exception as e:
-                logger.warning(f"Failed to upload file {attachment.name}: {e}")
+                logger.warning(f"Failed to upload file {_attachment_get(attachment, 'name', 'file')}: {e}")
                 # Continue without this file rather than failing the entire request
 
         return uploaded_files

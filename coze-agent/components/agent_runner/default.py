@@ -10,11 +10,6 @@ import json
 import logging
 import typing
 
-from pkg.coze_client import (
-    AsyncCozeClient,
-    CozeAPIError,
-    CozeConfigError,
-)
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
@@ -22,8 +17,70 @@ from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunResult,
 )
 from langbot_plugin.api.entities.builtin.provider.message import MessageChunk
+from pkg.coze_client import (
+    AsyncCozeClient,
+    CozeAPIError,
+    CozeConfigError,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _attachment_get(attachment: typing.Any, key: str, default: typing.Any = None) -> typing.Any:
+    if isinstance(attachment, dict):
+        return attachment.get(key, default)
+    return getattr(attachment, key, default)
+
+
+def _content_get(content: typing.Any, key: str, default: typing.Any = None) -> typing.Any:
+    if isinstance(content, dict):
+        return content.get(key, default)
+    return getattr(content, key, default)
+
+
+def _content_type_from_base64(value: typing.Any, default: str) -> str:
+    if isinstance(value, str) and value.startswith("data:") and ";base64," in value:
+        return value[5:value.find(";base64,")] or default
+    return default
+
+
+def _decode_content(value: typing.Any) -> bytes | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, str):
+        payload = value.split(",", 1)[1] if value.startswith("data:") and "," in value else value
+        try:
+            return base64.b64decode(payload, validate=True)
+        except Exception:
+            return value.encode("utf-8")
+    return None
+
+
+def _attachments_from_contents(contents: list[typing.Any]) -> list[dict[str, typing.Any]]:
+    attachments: list[dict[str, typing.Any]] = []
+    for item in contents or []:
+        item_type = _content_get(item, "type")
+        if item_type == "image_base64":
+            content = _content_get(item, "image_base64")
+            attachments.append({
+                "type": "image",
+                "name": "image.png",
+                "content": content,
+                "content_type": _content_type_from_base64(content, "image/jpeg"),
+            })
+        elif item_type == "file_base64":
+            content = _content_get(item, "file_base64")
+            attachments.append({
+                "type": "file",
+                "name": _content_get(item, "file_name") or "file",
+                "content": content,
+                "content_type": _content_type_from_base64(content, "application/octet-stream"),
+            })
+    return attachments
 
 
 class DefaultAgentRunner(AgentRunner):
@@ -118,39 +175,43 @@ class DefaultAgentRunner(AgentRunner):
         content_parts: list[dict[str, typing.Any]] = []
 
         # Process attachments first
-        for attachment in ctx.input.attachments:
-            try:
-                # Handle image_base64 type
-                if attachment.type == "image_base64":
-                    # Upload image to get file_id
-                    image_b64 = attachment.content
-                    if isinstance(image_b64, str):
-                        # Remove data URL prefix if present
-                        if image_b64.startswith("data:"):
-                            image_b64 = image_b64.split(",", 1)[1]
-                        file_bytes = base64.b64decode(image_b64)
-                    else:
-                        file_bytes = image_b64
+        attachments = list(ctx.input.attachments or [])
+        if not any(_attachment_get(attachment, "content") for attachment in attachments):
+            attachments.extend(_attachments_from_contents(ctx.input.contents))
 
-                    file_id = await client.upload_file(file_bytes, attachment.name or "image.png")
+        for attachment in attachments:
+            try:
+                attachment_type = _attachment_get(attachment, "type")
+                content_type = _attachment_get(attachment, "content_type") or "application/octet-stream"
+
+                if attachment_type == "image_base64" or (
+                    attachment_type == "image" and content_type.startswith("image/")
+                ):
+                    # Upload image to get file_id
+                    file_bytes = _decode_content(_attachment_get(attachment, "content"))
+
+                    if not file_bytes:
+                        continue
+
+                    file_id = await client.upload_file(file_bytes, _attachment_get(attachment, "name") or "image.png")
                     content_parts.append({"type": "image", "file_id": file_id})
 
                 # Handle file type
-                elif attachment.type == "file":
-                    file_bytes = attachment.content
+                elif attachment_type == "file":
+                    file_bytes = _decode_content(_attachment_get(attachment, "content"))
                     if file_bytes:
-                        file_id = await client.upload_file(file_bytes, attachment.name or "file")
+                        file_id = await client.upload_file(file_bytes, _attachment_get(attachment, "name") or "file")
                         content_parts.append({"type": "file", "file_id": file_id})
 
                 # Handle image type (direct bytes)
-                elif attachment.type == "image":
-                    file_bytes = attachment.content
+                elif attachment_type == "image":
+                    file_bytes = _decode_content(_attachment_get(attachment, "content"))
                     if file_bytes:
-                        file_id = await client.upload_file(file_bytes, attachment.name or "image.png")
+                        file_id = await client.upload_file(file_bytes, _attachment_get(attachment, "name") or "image.png")
                         content_parts.append({"type": "image", "file_id": file_id})
 
             except Exception as e:
-                logger.warning(f"Failed to process attachment {attachment.name}: {e}")
+                logger.warning(f"Failed to process attachment {_attachment_get(attachment, 'name', 'attachment')}: {e}")
                 # Continue without this attachment
 
         # Add text content

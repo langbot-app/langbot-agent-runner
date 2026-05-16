@@ -10,12 +10,6 @@ import logging
 import typing
 import uuid
 
-from pkg.langflow_client import (
-    AsyncLangflowClient,
-    LangflowAPIError,
-    LangflowConfigError,
-    extract_message_from_response,
-)
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
@@ -23,6 +17,12 @@ from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunResult,
 )
 from langbot_plugin.api.entities.builtin.provider.message import Message, MessageChunk
+from pkg.langflow_client import (
+    AsyncLangflowClient,
+    LangflowAPIError,
+    LangflowConfigError,
+    extract_message_from_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -144,8 +144,9 @@ class DefaultAgentRunner(AgentRunner):
         input_text = ctx.input.to_text()
         session_id = self._get_session_id(ctx)
 
-        # Check if streaming is supported
-        is_stream = ctx.capabilities.streaming
+        # Protocol v1 exposes runner capabilities through the manifest, not
+        # AgentRunContext. Allow config to disable streaming for compatibility.
+        is_stream = bool(ctx.config.get("streaming", True))
 
         try:
             accumulated_content = ""
