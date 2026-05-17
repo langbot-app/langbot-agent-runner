@@ -1,12 +1,25 @@
-# Local Agent Runner 迁移计划
+# Local Agent Runner 迁移计划（已迁出）
 
-本文档规划 `local-agent` 从 Phase 0 stub 迁移为真实官方 AgentRunner 的步骤。当前三方最小联调已经通过：
+> 当前文档是历史计划，保留用于了解迁移背景。真实 `local-agent` 官方插件已经迁到相邻仓库 `/home/glwuy/langbot-app/langbot-local-agent`。后续实现、测试和 parity 收口应以该仓库的 README、测试和 `langbot-skills` 的 local-agent 覆盖矩阵为准。
+
+本文档曾规划 `local-agent` 从 Phase 0 stub 迁移为真实官方 AgentRunner 的步骤。历史上三方最小联调曾通过：
 
 ```text
 LangBot -> SDK runtime -> langbot-agent-runner/local-agent -> LangBot
 ```
 
-验证输入 `1`，输出 `[stub] Echo: 1`。这说明协议主链路可用。下一步要把 `local-agent/components/agent_runner/default.py` 从 stub 变成真实模型 runner。
+验证输入 `1`，输出 `[stub] Echo: 1`。这说明协议主链路可用。
+
+后续工作不再在本仓库推进。当前 SDK/Host 已经补齐本计划中提到的主要缺口：
+
+- `AgentRunContext.prompt`：宿主侧有效 prompt。
+- `ctx.input.contents`：结构化/多模态当前输入。
+- `ctx.runtime.metadata.streaming_supported` 与 `remove_think`。
+- `AgentRunAPIProxy.invoke_llm` / `invoke_llm_stream` 的 `remove_think` override。
+- `AgentRunAPIProxy.invoke_rerank`，并按 run-scoped model resources 做授权校验。
+- LangBot host action 通过 `run_id/query_id` 找回当前 Query，恢复工具、知识库、模型 extra args 等上下文能力。
+
+以下章节保留原计划文本，不代表当前实现状态；其中关于缺少 rerank proxy、只做 Phase A、`ctx.config["prompt"]` 优先等判断已经被后续 SDK/Host/local-agent 实现取代。
 
 ## 1. 迁移目标
 

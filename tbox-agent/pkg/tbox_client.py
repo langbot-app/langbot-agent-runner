@@ -6,7 +6,6 @@ This module provides an async wrapper around tboxsdk for use with the AgentRunne
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import tempfile
 import typing

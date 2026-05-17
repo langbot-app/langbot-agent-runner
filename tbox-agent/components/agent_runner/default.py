@@ -193,6 +193,13 @@ class DefaultAgentRunner(AgentRunner):
         """Get text input from context."""
         return ctx.input.to_text()
 
+    def _should_stream(self, ctx: AgentRunContext) -> bool:
+        """Decide whether to request streaming from Tbox."""
+        configured = ctx.config.get("streaming")
+        if configured is not None:
+            return bool(configured)
+        return bool(ctx.runtime.metadata.get("streaming_supported", True))
+
     async def run(self, ctx: AgentRunContext) -> typing.AsyncGenerator[AgentRunResult, None]:
         """Run the Tbox agent.
 
@@ -219,9 +226,7 @@ class DefaultAgentRunner(AgentRunner):
         # Get conversation_id from state (not from config!)
         conversation_id = self._get_external_conversation_id(ctx)
 
-        # Determine if streaming is supported
-        # Note: Tbox streaming support might depend on the app configuration
-        is_stream = True  # Default to streaming
+        is_stream = self._should_stream(ctx)
 
         try:
             async for result in self._run_chat(

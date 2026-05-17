@@ -119,3 +119,27 @@ def test_dify_runner_uses_protocol_v1_actor_fields_for_user_tag() -> None:
     )
 
     assert runner._get_user_tag(ctx) == "user_user_1"
+
+
+def test_non_streaming_capability_metadata_is_honored_when_supported() -> None:
+    from langbot_plugin.api.entities.builtin.agent_runner import (
+        AgentInput,
+        AgentResources,
+        AgentRunContext,
+        AgentRuntimeContext,
+        AgentTrigger,
+    )
+
+    for plugin_dir in {"langflow-agent", "tbox-agent"}:
+        module = _load_runner_module(plugin_dir)
+        runner = object.__new__(module.DefaultAgentRunner)
+        ctx = AgentRunContext(
+            run_id="run_1",
+            trigger=AgentTrigger(type="message.received"),
+            input=AgentInput(text="hello"),
+            resources=AgentResources(),
+            runtime=AgentRuntimeContext(metadata={"streaming_supported": False}),
+            config={},
+        )
+
+        assert runner._should_stream(ctx) is False

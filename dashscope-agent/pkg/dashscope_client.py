@@ -126,8 +126,7 @@ class DashScopeClient:
             has_thoughts=enable_thinking,
         )
 
-        for chunk in response:
-            yield chunk
+        yield from response
 
     def call_workflow(
         self,
@@ -158,5 +157,4 @@ class DashScopeClient:
             flow_stream_mode='message_format',
         )
 
-        for chunk in response:
-            yield chunk
+        yield from response

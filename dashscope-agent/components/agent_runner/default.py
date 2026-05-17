@@ -8,13 +8,6 @@ from __future__ import annotations
 import logging
 import typing
 
-from pkg.dashscope_client import (
-    DashScopeAPIError,
-    DashScopeClient,
-    DashScopeConfigError,
-    extract_references_from_chunk,
-    replace_references,
-)
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
@@ -22,6 +15,13 @@ from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunResult,
 )
 from langbot_plugin.api.entities.builtin.provider.message import MessageChunk
+from pkg.dashscope_client import (
+    DashScopeAPIError,
+    DashScopeClient,
+    DashScopeConfigError,
+    extract_references_from_chunk,
+    replace_references,
+)
 
 logger = logging.getLogger(__name__)
 

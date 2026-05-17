@@ -6,11 +6,12 @@
 
 ## 1. 仓库目标
 
-`langbot-agent-runner` 是官方 runner 插件仓库，不属于 LangBot host，也不属于 SDK runtime。
+`langbot-agent-runner` 是官方外部服务 runner 插件仓库，不属于 LangBot host，也不属于 SDK runtime。
 
 职责边界：
 
-- 本仓库实现官方业务 runner 插件：Local Agent、Dify、n8n、Coze、DashScope、Langflow、Tbox。
+- 本仓库实现官方外部服务 runner 插件：Dify、n8n、Coze、DashScope、Langflow、Tbox。
+- `local-agent` 已拆到相邻仓库 `/home/glwuy/langbot-app/langbot-local-agent`，因为它直接消费 LangBot 模型、工具、知识库和 rerank proxy，有独立的 parity 测试面。
 - LangBot host 只负责发现 runner、构造 `AgentRunContext`、裁剪资源、调用 SDK runtime、归一结果。
 - SDK 只负责 AgentRunner 组件接口、runtime discovery、`RUN_AGENT` 执行协议。
 - 本仓库不得重新引入 LangBot host 的 Pipeline 内部对象作为运行时依赖。
@@ -45,7 +46,9 @@ LangBot host 侧对接前确认：
 
 - Runner id 使用 `plugin:{author}/{plugin_name}/{runner_name}`。
 - LangBot 构造 SDK v1 `AgentRunContext`。
+- LangBot 构造 `ctx.prompt` 作为宿主侧处理后的有效 prompt；直接调用 LangBot 模型的 runner 应优先消费它。
 - LangBot 按 SDK 当前 `AgentResources` 字段名构造资源。
+- LangBot 在 `ctx.runtime.metadata` 中暴露运行期能力，例如 `streaming_supported` 和 `remove_think`。
 - LangBot 只接收 v1 `AgentRunResult`。
 - 历史配置由 LangBot host 迁移到 `ai.runner_config[runner_id]`。
 
@@ -59,24 +62,6 @@ LangBot host 侧对接前确认：
 langbot-agent-runner/
   README.md
   pyproject.toml
-  local-agent/
-    manifest.yaml
-    components/
-      agent_runner/
-        default.yaml
-        default.py
-    pkg/
-      __init__.py
-      config.py
-      rag.py
-      tool_loop.py
-    assets/
-      icon.svg
-    readme/
-    README.md
-    requirements.txt
-    main.py
-    tests/
   dify-agent/
     manifest.yaml
     components/agent_runner/default.yaml
@@ -116,7 +101,6 @@ langbot-agent-runner/
 
 | 旧 runner | 新官方插件 | runner id | 旧实现来源 |
 | --- | --- | --- | --- |
-| `local-agent` | `langbot/local-agent` | `plugin:langbot/local-agent/default` | `/home/glwuy/langbot-app/LangBot/src/langbot/pkg/provider/runners/localagent.py` |
 | `dify-service-api` | `langbot/dify-agent` | `plugin:langbot/dify-agent/default` | `/home/glwuy/langbot-app/LangBot/src/langbot/pkg/provider/runners/difysvapi.py` |
 | `n8n-service-api` | `langbot/n8n-agent` | `plugin:langbot/n8n-agent/default` | `/home/glwuy/langbot-app/LangBot/src/langbot/pkg/provider/runners/n8nsvapi.py` |
 | `coze-api` | `langbot/coze-agent` | `plugin:langbot/coze-agent/default` | `/home/glwuy/langbot-app/LangBot/src/langbot/pkg/provider/runners/cozeapi.py` |
@@ -217,12 +201,14 @@ class DefaultAgentRunner(AgentRunner):
 2. `ctx.input.to_text()` 是纯文本主输入。
 3. `ctx.input.contents`、`ctx.input.attachments` 用于多模态输入和文件输入。
 4. `ctx.messages` 是 LangBot host 已经整理好的历史消息。
-5. `ctx.conversation` 只作为外部平台 session/conversation id 的来源之一。
-6. 外部平台 conversation id 如果需要持久化，优先使用 plugin storage 或平台返回的 state，并通过 `state.updated` 暴露给 LangBot host。
-7. 流式 runner 输出 `message.delta`，最后输出 `run.completed`。
-8. 非流式 runner 输出 `message.completed`，最后输出 `run.completed`。
-9. 业务异常不要吞掉后伪装成普通 assistant 文本；应输出或抛出，让 runtime 转为 `run.failed`。
-10. 配置缺失应尽早失败，错误 code 使用 `runner.config_invalid` 或让 runtime 包装为 `runner.exception`。
+5. `ctx.prompt` 是宿主处理后的有效 prompt。外部平台 runner 通常不消费它，除非目标平台确实需要由 runner 拼接 prompt；直接调用 LangBot LLM 的 runner 应优先使用它。
+6. `ctx.runtime.metadata.streaming_supported` 表示当前宿主 adapter 是否能消费流式输出。目标平台支持非流式时，应以它作为默认 streaming 决策，并允许显式 config 覆盖。
+7. `ctx.conversation` 只作为外部平台 session/conversation id 的来源之一。
+8. 外部平台 conversation id 如果需要持久化，优先使用 plugin storage 或平台返回的 state，并通过 `state.updated` 暴露给 LangBot host。
+9. 流式 runner 输出 `message.delta`，最后输出 `run.completed`。
+10. 非流式 runner 输出 `message.completed`，最后输出 `run.completed`。
+11. 业务异常不要吞掉后伪装成普通 assistant 文本；应输出或抛出，让 runtime 转为 `run.failed`。
+12. 配置缺失应尽早失败，错误 code 使用 `runner.config_invalid` 或让 runtime 包装为 `runner.exception`。
 
 ## 7. `_shared` 开发期工具
 
@@ -257,7 +243,7 @@ class DefaultAgentRunner(AgentRunner):
 - 根 `README.md`
 - 根 `pyproject.toml`
 - `_shared/langbot_agent_runner_utils` 开发期工具
-- 七个根目录插件：`local-agent/`、`dify-agent/`、`n8n-agent/`、`coze-agent/`、`dashscope-agent/`、`langflow-agent/`、`tbox-agent/`
+- 六个根目录外部服务插件：`dify-agent/`、`n8n-agent/`、`coze-agent/`、`dashscope-agent/`、`langflow-agent/`、`tbox-agent/`
 - 每个插件的 `manifest.yaml`、`components/agent_runner/default.yaml`、`components/agent_runner/default.py`、`main.py`
 - 最小 contract tests
 
@@ -265,7 +251,7 @@ class DefaultAgentRunner(AgentRunner):
 
 - 每个插件目录都能被 SDK runtime discovery 识别为 `AgentRunner`。
 - discovery 返回 runner id 所需字段：author/name/runner_name/protocol_version/capabilities/permissions/config。
-- 所有 stub runner 都能执行 `RUN_AGENT` 并返回 `message.completed` + `run.completed`。
+- 初始 stub runner 都能执行 `RUN_AGENT` 并返回 `message.completed` + `run.completed`；当前实现已替换为真实外部服务调用。
 
 ### Phase 1：Dify 垂直切片
 

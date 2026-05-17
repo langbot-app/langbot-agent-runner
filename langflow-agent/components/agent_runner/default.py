@@ -120,6 +120,13 @@ class DefaultAgentRunner(AgentRunner):
             return f"{actor.type}_{actor.id}"
         return f"user_{ctx.run_id}"
 
+    def _should_stream(self, ctx: AgentRunContext) -> bool:
+        """Decide whether to request streaming from Langflow."""
+        configured = ctx.config.get("streaming")
+        if configured is not None:
+            return bool(configured)
+        return bool(ctx.runtime.metadata.get("streaming_supported", True))
+
     async def run(self, ctx: AgentRunContext) -> typing.AsyncGenerator[AgentRunResult, None]:
         """Run the Langflow flow.
 
@@ -144,9 +151,7 @@ class DefaultAgentRunner(AgentRunner):
         input_text = ctx.input.to_text()
         session_id = self._get_session_id(ctx)
 
-        # Protocol v1 exposes runner capabilities through the manifest, not
-        # AgentRunContext. Allow config to disable streaming for compatibility.
-        is_stream = bool(ctx.config.get("streaming", True))
+        is_stream = self._should_stream(ctx)
 
         try:
             accumulated_content = ""

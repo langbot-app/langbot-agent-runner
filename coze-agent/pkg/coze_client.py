@@ -102,7 +102,6 @@ class AsyncCozeClient:
         Raises:
             CozeAPIError: On upload failure
         """
-        session = await self._get_session()
         url = f"{self.api_base}/v1/files/upload"
 
         try:
@@ -136,11 +135,11 @@ class AsyncCozeClient:
 
                     try:
                         result = await response.json()
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as e:
                         raise CozeAPIError(
                             f"File upload response parse error: {response_text[:200]}",
                             code="coze.response_invalid",
-                        )
+                        ) from e
 
                     if result.get("code") != 0:
                         raise CozeAPIError(
@@ -153,7 +152,7 @@ class AsyncCozeClient:
 
         except asyncio.TimeoutError:
             raise CozeAPIError(
-                f"File upload timed out after 60s",
+                "File upload timed out after 60s",
                 code="coze.timeout",
             ) from None
         except CozeAPIError:

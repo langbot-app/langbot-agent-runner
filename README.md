@@ -19,6 +19,18 @@ Each plugin directory is a standalone LangBot plugin that can be discovered, ins
 
 The official `local-agent` runner is maintained in the sibling `langbot-local-agent` repository because it has a separate release and test surface.
 
+## SDK Alignment
+
+This repository consumes AgentRunner Protocol v1 through `langbot-plugin-sdk`.
+External-service runners mainly use:
+
+- `ctx.input` for text and multimodal payloads
+- `ctx.params` for workflow/business inputs
+- `ctx.state` and `ctx.conversation` for external session IDs
+- `ctx.runtime.metadata.streaming_supported` when the target service supports both streaming and non-streaming calls
+
+`ctx.prompt` is exposed by the SDK for runners that call LangBot-hosted models directly, especially `langbot-local-agent`. These external-service runners should not reinterpret it as a replacement for each third-party platform's own prompt or app configuration.
+
 ## Development
 
 ### Requirements
