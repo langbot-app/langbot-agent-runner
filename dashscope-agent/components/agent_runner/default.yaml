@@ -3,8 +3,8 @@ kind: AgentRunner
 metadata:
   name: default
   label:
-    en_US: Default
-    zh_Hans: 默认
+    en_US: DashScope
+    zh_Hans: 百炼
   description:
     en_US: Run an Aliyun DashScope application as a LangBot AgentRunner.
     zh_Hans: 将阿里云百炼应用作为 LangBot AgentRunner 运行。

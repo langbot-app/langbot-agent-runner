@@ -3,8 +3,8 @@ kind: AgentRunner
 metadata:
   name: default
   label:
-    en_US: Default
-    zh_Hans: 默认
+    en_US: n8n
+    zh_Hans: n8n
   description:
     en_US: Run an n8n workflow webhook as a LangBot AgentRunner.
     zh_Hans: 将 n8n 工作流 webhook 作为 LangBot AgentRunner 运行。

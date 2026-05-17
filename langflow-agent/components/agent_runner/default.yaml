@@ -3,8 +3,8 @@ kind: AgentRunner
 metadata:
   name: default
   label:
-    en_US: Default
-    zh_Hans: 默认
+    en_US: Langflow
+    zh_Hans: Langflow
   description:
     en_US: Run a Langflow flow as a LangBot AgentRunner.
     zh_Hans: 将 Langflow 流程作为 LangBot AgentRunner 运行。

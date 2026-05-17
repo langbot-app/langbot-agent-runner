@@ -50,6 +50,8 @@ def test_official_external_runner_plugins_have_protocol_v1_manifests() -> None:
         assert runner["apiVersion"] == "langbot/v1"
         assert runner["kind"] == "AgentRunner"
         assert runner["metadata"]["name"] == "default"
+        assert runner["metadata"]["label"]["en_US"] != "Default"
+        assert runner["metadata"]["label"]["zh_Hans"] != "默认"
         assert runner["spec"]["protocol_version"] == "1"
         assert runner["execution"]["python"]["path"] == "default.py"
         assert runner["execution"]["python"]["attr"] == "DefaultAgentRunner"
@@ -93,3 +95,27 @@ def test_multimodal_runners_decode_data_url_attachments_and_derive_from_contents
                 "content_type": "text/plain",
             }
         ]
+
+
+def test_dify_runner_uses_protocol_v1_actor_fields_for_user_tag() -> None:
+    from langbot_plugin.api.entities.builtin.agent_runner import (
+        ActorContext,
+        AgentInput,
+        AgentResources,
+        AgentRunContext,
+        AgentRuntimeContext,
+        AgentTrigger,
+    )
+
+    module = _load_runner_module("dify-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    ctx = AgentRunContext(
+        run_id="run_1",
+        trigger=AgentTrigger(type="message.received"),
+        input=AgentInput(text="hello"),
+        resources=AgentResources(),
+        runtime=AgentRuntimeContext(),
+        actor=ActorContext(actor_type="user", actor_id="user_1"),
+    )
+
+    assert runner._get_user_tag(ctx) == "user_user_1"

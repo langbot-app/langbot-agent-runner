@@ -3,8 +3,8 @@ kind: AgentRunner
 metadata:
   name: default
   label:
-    en_US: Default
-    zh_Hans: 默认
+    en_US: Dify
+    zh_Hans: Dify
   description:
     en_US: Run a Dify application as a LangBot AgentRunner.
     zh_Hans: 将 Dify 应用作为 LangBot AgentRunner 运行。

@@ -155,7 +155,10 @@ class DefaultAgentRunner(AgentRunner):
         """Get user identifier for Dify API."""
         actor = ctx.actor
         if actor:
-            return f"{actor.type}_{actor.id}"
+            actor_type = getattr(actor, "actor_type", None) or getattr(actor, "type", None)
+            actor_id = getattr(actor, "actor_id", None) or getattr(actor, "id", None)
+            if actor_type and actor_id:
+                return f"{actor_type}_{actor_id}"
         return f"user_{ctx.run_id}"
 
     def _get_external_conversation_id(self, ctx: AgentRunContext) -> str:

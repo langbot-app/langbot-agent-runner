@@ -3,8 +3,8 @@ kind: AgentRunner
 metadata:
   name: default
   label:
-    en_US: Default
-    zh_Hans: 默认
+    en_US: Coze
+    zh_Hans: 扣子
   description:
     en_US: Run a Coze bot as a LangBot AgentRunner.
     zh_Hans: 将扣子机器人作为 LangBot AgentRunner 运行。
