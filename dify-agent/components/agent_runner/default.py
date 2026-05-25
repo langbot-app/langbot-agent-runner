@@ -29,6 +29,14 @@ from pkg.dify_client import (
 logger = logging.getLogger(__name__)
 
 
+def _get_adapter_params(ctx: AgentRunContext) -> dict[str, typing.Any]:
+    """Read single-run business params from adapter.extra.params."""
+    if ctx.adapter is None:
+        return {}
+    params = (ctx.adapter.extra or {}).get("params")
+    return dict(params) if isinstance(params, dict) else {}
+
+
 def _attachment_get(attachment: typing.Any, key: str, default: typing.Any = None) -> typing.Any:
     if isinstance(attachment, dict):
         return attachment.get(key, default)
@@ -105,7 +113,7 @@ class DefaultAgentRunner(AgentRunner):
     Runtime state (from ctx.state):
     - external.conversation_id: Dify conversation ID for stateful sessions
 
-    Runtime params (from ctx.params):
+    Runtime params (from ctx.adapter.extra.params):
     - Workflow inputs passed to Dify workflow endpoint
     - Custom variables passed to Dify chat-messages inputs
     """
@@ -182,11 +190,11 @@ class DefaultAgentRunner(AgentRunner):
         return ""
 
     def _get_dify_inputs(self, ctx: AgentRunContext) -> dict[str, typing.Any]:
-        """Get inputs for Dify API from ctx.params.
+        """Get inputs for Dify API from adapter params.
 
-        Does NOT modify ctx.params.
+        Does NOT modify adapter params.
         """
-        return dict(ctx.params or {})
+        return _get_adapter_params(ctx)
 
     async def _upload_input_files(
         self,
@@ -253,7 +261,7 @@ class DefaultAgentRunner(AgentRunner):
         try:
             config = self._validate_config(ctx)
         except DifyConfigError as e:
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
@@ -294,14 +302,14 @@ class DefaultAgentRunner(AgentRunner):
                 ):
                     yield result
         except DifyAPIError as e:
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
             return
         except Exception as e:
             logger.exception(f"Dify runner unexpected error: {e}")
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=f"Dify runner error: {e}",
                 code="dify.unexpected_error",
             )
@@ -360,7 +368,7 @@ class DefaultAgentRunner(AgentRunner):
                     content, _ = process_thinking_content(answer, remove_think)
                     if content:
                         has_response = True
-                        yield AgentRunResult.message_delta(
+                        yield AgentRunResult.message_delta(ctx.run_id,
                             MessageChunk(role="assistant", content=content)
                         )
 
@@ -374,7 +382,7 @@ class DefaultAgentRunner(AgentRunner):
                 if pending_content:
                     content, _ = process_thinking_content(pending_content, remove_think)
                     has_response = True
-                    yield AgentRunResult.message_delta(
+                    yield AgentRunResult.message_delta(ctx.run_id,
                         MessageChunk(role="assistant", content=content, is_final=True)
                     )
                 pending_content = ""
@@ -393,14 +401,14 @@ class DefaultAgentRunner(AgentRunner):
                     content, _ = process_thinking_content(pending_content, remove_think)
                     if content:
                         has_response = True
-                        yield AgentRunResult.message_delta(
+                        yield AgentRunResult.message_delta(ctx.run_id,
                             MessageChunk(role="assistant", content=content)
                         )
                     pending_content = ""
 
                 # Report tool call as message_delta with tool_calls
                 if tool:
-                    yield AgentRunResult.message_delta(
+                    yield AgentRunResult.message_delta(ctx.run_id,
                         MessageChunk(
                             role="assistant",
                             content="",
@@ -430,7 +438,7 @@ class DefaultAgentRunner(AgentRunner):
                             image_url = base_url + image_url
 
                         has_response = True
-                        yield AgentRunResult.message_delta(
+                        yield AgentRunResult.message_delta(ctx.run_id,
                             MessageChunk(
                                 role="assistant",
                                 content=[
@@ -450,7 +458,7 @@ class DefaultAgentRunner(AgentRunner):
             content, _ = process_thinking_content(pending_content, remove_think)
             if content:
                 has_response = True
-                yield AgentRunResult.message_delta(
+                yield AgentRunResult.message_delta(ctx.run_id,
                     MessageChunk(role="assistant", content=content, is_final=True)
                 )
 
@@ -462,13 +470,13 @@ class DefaultAgentRunner(AgentRunner):
 
         # Update state with conversation_id for next run (scoped state)
         if final_conversation_id:
-            yield AgentRunResult.state_updated(
+            yield AgentRunResult.state_updated(ctx.run_id,
                 "external.conversation_id",
                 final_conversation_id,
                 scope="conversation",
             )
 
-        yield AgentRunResult.run_completed()
+        yield AgentRunResult.run_completed(ctx.run_id)
 
     async def _run_workflow(
         self,
@@ -488,25 +496,25 @@ class DefaultAgentRunner(AgentRunner):
         - langbot_user_message_text: input_text
         - langbot_session_id: ctx.conversation.session_id or ctx.run_id
         - langbot_conversation_id: from state or ctx.conversation
-        - langbot_msg_create_time: ctx.params.get("msg_create_time")
+        - langbot_msg_create_time: adapter params msg_create_time
         """
         # Derive legacy input variables from context (Dify-specific, not SDK protocol)
         session_id = ctx.conversation.session_id if ctx.conversation else None
         session_id = session_id or ctx.run_id
 
-        # Get conversation_id from state or context for legacy compatibility
-        legacy_conv_id = ctx.state.conversation.get("external.conversation_id")
-        if not legacy_conv_id and ctx.conversation:
-            legacy_conv_id = ctx.conversation.conversation_id
-        if not legacy_conv_id:
-            legacy_conv_id = ctx.run_id
+        # Get conversation_id from state or context for Dify workflow inputs.
+        external_conv_id = ctx.state.conversation.get("external.conversation_id")
+        if not external_conv_id and ctx.conversation:
+            external_conv_id = ctx.conversation.conversation_id
+        if not external_conv_id:
+            external_conv_id = ctx.run_id
 
         msg_create_time = inputs.get("msg_create_time")
 
         workflow_inputs = {
             "langbot_user_message_text": input_text,
             "langbot_session_id": session_id,
-            "langbot_conversation_id": legacy_conv_id,
+            "langbot_conversation_id": external_conv_id,
         }
         if msg_create_time:
             workflow_inputs["langbot_msg_create_time"] = msg_create_time
@@ -542,7 +550,7 @@ class DefaultAgentRunner(AgentRunner):
                     continue
 
                 # Report node start as tool call indicator
-                yield AgentRunResult.message_delta(
+                yield AgentRunResult.message_delta(ctx.run_id,
                     MessageChunk(
                         role="assistant",
                         content="",
@@ -574,7 +582,7 @@ class DefaultAgentRunner(AgentRunner):
                 if summary:
                     content, _ = process_thinking_content(summary, remove_think)
                     has_response = True
-                    yield AgentRunResult.message_delta(
+                    yield AgentRunResult.message_delta(ctx.run_id,
                         MessageChunk(role="assistant", content=content, is_final=True)
                     )
 
@@ -583,7 +591,7 @@ class DefaultAgentRunner(AgentRunner):
             content, _ = process_thinking_content(pending_content, remove_think)
             if content:
                 has_response = True
-                yield AgentRunResult.message_delta(
+                yield AgentRunResult.message_delta(ctx.run_id,
                     MessageChunk(role="assistant", content=content, is_final=True)
                 )
 
@@ -593,4 +601,4 @@ class DefaultAgentRunner(AgentRunner):
                 code="dify.api_error",
             )
 
-        yield AgentRunResult.run_completed()
+        yield AgentRunResult.run_completed(ctx.run_id)

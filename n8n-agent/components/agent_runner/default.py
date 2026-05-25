@@ -25,6 +25,14 @@ from pkg.n8n_client import (
 logger = logging.getLogger(__name__)
 
 
+def _get_adapter_params(ctx: AgentRunContext) -> dict[str, typing.Any]:
+    """Read single-run business params from adapter.extra.params."""
+    if ctx.adapter is None:
+        return {}
+    params = (ctx.adapter.extra or {}).get("params")
+    return dict(params) if isinstance(params, dict) else {}
+
+
 class DefaultAgentRunner(AgentRunner):
     """Real AgentRunner for n8n Webhook.
 
@@ -135,10 +143,11 @@ class DefaultAgentRunner(AgentRunner):
     ) -> dict[str, typing.Any]:
         """Build webhook payload.
 
-        Includes standard fields and merges ctx.params.
+        Includes standard fields and merges adapter params.
         """
         user_tag = self._get_user_tag(ctx)
         session_id = self._get_session_id(ctx)
+        params = _get_adapter_params(ctx)
 
         payload = {
             # Standard message fields (multiple keys for compatibility)
@@ -151,16 +160,16 @@ class DefaultAgentRunner(AgentRunner):
             "user_id": user_tag,
         }
 
-        # Add optional fields from params
-        if ctx.params:
+        # Add optional fields from adapter params
+        if params:
             # msg_create_time is commonly used
-            msg_create_time = ctx.params.get("msg_create_time")
+            msg_create_time = params.get("msg_create_time")
             if msg_create_time:
                 payload["msg_create_time"] = msg_create_time
 
             # Merge other params (excluding reserved keys)
             reserved_keys = {"msg_create_time", "conversation_id", "session_id", "user_id"}
-            for key, value in ctx.params.items():
+            for key, value in params.items():
                 if key not in reserved_keys:
                     payload[key] = value
 
@@ -174,7 +183,7 @@ class DefaultAgentRunner(AgentRunner):
         try:
             config = self._validate_config(ctx)
         except N8nConfigError as e:
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
@@ -217,14 +226,14 @@ class DefaultAgentRunner(AgentRunner):
                     has_response = True
 
                     # Yield delta for each chunk
-                    yield AgentRunResult.message_delta(
+                    yield AgentRunResult.message_delta(ctx.run_id,
                         MessageChunk(role="assistant", content=full_content)
                     )
 
                 elif event_type == "end":
                     # Streaming completed
                     if full_content:
-                        yield AgentRunResult.message_delta(
+                        yield AgentRunResult.message_delta(ctx.run_id,
                             MessageChunk(role="assistant", content=full_content, is_final=True)
                         )
 
@@ -233,26 +242,26 @@ class DefaultAgentRunner(AgentRunner):
                     output_content = event.get("content", "")
                     if output_content:
                         has_response = True
-                        yield AgentRunResult.message_delta(
+                        yield AgentRunResult.message_delta(ctx.run_id,
                             MessageChunk(role="assistant", content=output_content, is_final=True)
                         )
 
         except N8nAPIError as e:
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
             return
         except Exception as e:
             logger.exception(f"n8n runner unexpected error: {e}")
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=f"n8n runner error: {e}",
                 code="n8n.unexpected_error",
             )
             return
 
         if not has_response:
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error="n8n webhook returned no response",
                 code="n8n.empty_response",
             )
@@ -261,10 +270,10 @@ class DefaultAgentRunner(AgentRunner):
         # Store conversation_id in state for next run (scoped state)
         # Only update if we used a new conversation ID
         if conversation_id:
-            yield AgentRunResult.state_updated(
+            yield AgentRunResult.state_updated(ctx.run_id,
                 "external.conversation_id",
                 conversation_id,
                 scope="conversation",
             )
 
-        yield AgentRunResult.run_completed()
+        yield AgentRunResult.run_completed(ctx.run_id)

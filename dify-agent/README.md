@@ -50,6 +50,7 @@ The runner outputs `state.updated` with proper scope:
 
 ```python
 yield AgentRunResult.state_updated(
+    ctx.run_id,
     "external.conversation_id",
     dify_conversation_id,
     scope="conversation",
@@ -60,11 +61,11 @@ LangBot host persists this state and loads it on the next run.
 
 ## Workflow Inputs
 
-Workflow inputs are passed through `AgentRunContext.params`:
+Workflow inputs are passed through `ctx.adapter.extra.params`:
 
 ```python
-# Runner uses params as Dify inputs
-inputs = dict(ctx.params or {})
+# Runner uses adapter params as Dify inputs
+inputs = dict((ctx.adapter.extra or {}).get("params") or {})
 ```
 
 Legacy input variables are derived from context:
@@ -74,7 +75,7 @@ Legacy input variables are derived from context:
 | langbot_user_message_text | `ctx.input.to_text()` |
 | langbot_session_id | `ctx.conversation.session_id` or `ctx.run_id` |
 | langbot_conversation_id | `ctx.state.conversation.get("external.conversation_id")` or fallback |
-| langbot_msg_create_time | `ctx.params.get("msg_create_time")` if provided |
+| langbot_msg_create_time | `ctx.adapter.extra.params["msg_create_time"]` if provided |
 
 ## Example Usage
 
@@ -120,13 +121,13 @@ ctx = AgentRunContext(
 
 Runner passes `params` to Dify workflow inputs.
 
-## Legacy Runner
+## Replaced Runner
 
 Migrated from `dify-service-api` in LangBot.
 
-### Key Changes from Legacy
+### Key Changes
 
 1. **Config is static only**: No `conversation_id` in config
 2. **State via protocol**: Use `ctx.state` and `state.updated`
-3. **Inputs via params**: Use `ctx.params` for workflow inputs
+3. **Inputs via adapter params**: Use `ctx.adapter.extra.params` for workflow inputs
 4. **Scoped state**: `external.conversation_id` with `scope="conversation"`

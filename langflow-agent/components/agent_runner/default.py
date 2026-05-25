@@ -136,7 +136,7 @@ class DefaultAgentRunner(AgentRunner):
         try:
             config = self._validate_config(ctx)
         except LangflowConfigError as e:
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
@@ -179,7 +179,7 @@ class DefaultAgentRunner(AgentRunner):
 
                         # Yield chunks periodically (every 8 events or when content changes significantly)
                         if message_count % 8 == 0 or len(message_text) > 0:
-                            yield AgentRunResult.message_delta(
+                            yield AgentRunResult.message_delta(ctx.run_id,
                                 MessageChunk(
                                     role="assistant",
                                     content=accumulated_content,
@@ -198,7 +198,7 @@ class DefaultAgentRunner(AgentRunner):
             # Final output
             if accumulated_content:
                 if is_stream:
-                    yield AgentRunResult.message_delta(
+                    yield AgentRunResult.message_delta(ctx.run_id,
                         MessageChunk(
                             role="assistant",
                             content=accumulated_content,
@@ -211,7 +211,7 @@ class DefaultAgentRunner(AgentRunner):
                         role="assistant",
                         content=accumulated_content,
                     )
-                    yield AgentRunResult.message_completed(message)
+                    yield AgentRunResult.message_completed(ctx.run_id, message)
                 has_response = True
 
             if not has_response:
@@ -222,23 +222,23 @@ class DefaultAgentRunner(AgentRunner):
 
             # Update state with session_id for next run
             if final_session_id:
-                yield AgentRunResult.state_updated(
+                yield AgentRunResult.state_updated(ctx.run_id,
                     "external.session_id",
                     final_session_id,
                     scope="conversation",
                 )
 
-            yield AgentRunResult.run_completed()
+            yield AgentRunResult.run_completed(ctx.run_id)
 
         except LangflowAPIError as e:
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
             return
         except Exception as e:
             logger.exception(f"Langflow runner unexpected error: {e}")
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=f"Langflow runner error: {e}",
                 code="langflow.unexpected_error",
             )

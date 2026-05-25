@@ -208,7 +208,7 @@ class DefaultAgentRunner(AgentRunner):
         try:
             config = self._validate_config(ctx)
         except TboxConfigError as e:
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
@@ -234,14 +234,14 @@ class DefaultAgentRunner(AgentRunner):
             ):
                 yield result
         except TboxAPIError as e:
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
             return
         except Exception as e:
             logger.exception(f"Tbox runner unexpected error: {e}")
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=f"Tbox runner error: {e}",
                 code="tbox.unexpected_error",
             )
@@ -327,7 +327,7 @@ class DefaultAgentRunner(AgentRunner):
                 # Yield periodic updates (every 8 chunks)
                 if idx_msg > 0 and idx_msg % 8 == 0:
                     has_response = True
-                    yield AgentRunResult.message_delta(
+                    yield AgentRunResult.message_delta(ctx.run_id,
                         MessageChunk(
                             role="assistant",
                             content=pending_content,
@@ -360,7 +360,7 @@ class DefaultAgentRunner(AgentRunner):
                     result += content[0].get("chunk", "")
 
                 has_response = True
-                yield AgentRunResult.message_delta(
+                yield AgentRunResult.message_delta(ctx.run_id,
                     MessageChunk(
                         role="assistant",
                         content=result,
@@ -371,7 +371,7 @@ class DefaultAgentRunner(AgentRunner):
         # Handle remaining pending content for streaming
         if is_stream and pending_content:
             has_response = True
-            yield AgentRunResult.message_delta(
+            yield AgentRunResult.message_delta(ctx.run_id,
                 MessageChunk(
                     role="assistant",
                     content=pending_content,
@@ -387,10 +387,10 @@ class DefaultAgentRunner(AgentRunner):
 
         # Update state with conversation_id for next run (scoped state)
         if final_conversation_id:
-            yield AgentRunResult.state_updated(
+            yield AgentRunResult.state_updated(ctx.run_id,
                 "external.conversation_id",
                 final_conversation_id,
                 scope="conversation",
             )
 
-        yield AgentRunResult.run_completed()
+        yield AgentRunResult.run_completed(ctx.run_id)

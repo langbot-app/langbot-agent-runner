@@ -100,11 +100,13 @@ def test_multimodal_runners_decode_data_url_attachments_and_derive_from_contents
 def test_dify_runner_uses_protocol_v1_actor_fields_for_user_tag() -> None:
     from langbot_plugin.api.entities.builtin.agent_runner import (
         ActorContext,
+        AgentEventContext,
         AgentInput,
         AgentResources,
         AgentRunContext,
         AgentRuntimeContext,
         AgentTrigger,
+        DeliveryContext,
     )
 
     module = _load_runner_module("dify-agent")
@@ -112,7 +114,13 @@ def test_dify_runner_uses_protocol_v1_actor_fields_for_user_tag() -> None:
     ctx = AgentRunContext(
         run_id="run_1",
         trigger=AgentTrigger(type="message.received"),
+        event=AgentEventContext(
+            event_id="evt_1",
+            event_type="message.received",
+            source="pipeline_adapter",
+        ),
         input=AgentInput(text="hello"),
+        delivery=DeliveryContext(surface="pipeline"),
         resources=AgentResources(),
         runtime=AgentRuntimeContext(),
         actor=ActorContext(actor_type="user", actor_id="user_1"),
@@ -123,11 +131,13 @@ def test_dify_runner_uses_protocol_v1_actor_fields_for_user_tag() -> None:
 
 def test_non_streaming_capability_metadata_is_honored_when_supported() -> None:
     from langbot_plugin.api.entities.builtin.agent_runner import (
+        AgentEventContext,
         AgentInput,
         AgentResources,
         AgentRunContext,
         AgentRuntimeContext,
         AgentTrigger,
+        DeliveryContext,
     )
 
     for plugin_dir in {"langflow-agent", "tbox-agent"}:
@@ -136,7 +146,13 @@ def test_non_streaming_capability_metadata_is_honored_when_supported() -> None:
         ctx = AgentRunContext(
             run_id="run_1",
             trigger=AgentTrigger(type="message.received"),
+            event=AgentEventContext(
+                event_id="evt_1",
+                event_type="message.received",
+                source="pipeline_adapter",
+            ),
             input=AgentInput(text="hello"),
+            delivery=DeliveryContext(surface="pipeline"),
             resources=AgentResources(),
             runtime=AgentRuntimeContext(metadata={"streaming_supported": False}),
             config={},

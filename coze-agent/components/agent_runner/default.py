@@ -251,7 +251,7 @@ class DefaultAgentRunner(AgentRunner):
         try:
             config = self._validate_config(ctx)
         except CozeConfigError as e:
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
@@ -273,7 +273,7 @@ class DefaultAgentRunner(AgentRunner):
             additional_messages = await self._build_additional_messages(ctx, client)
         except Exception as e:
             logger.exception(f"Failed to build Coze messages: {e}")
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=f"Failed to prepare input: {e}",
                 code="coze.input_error",
             )
@@ -317,7 +317,7 @@ class DefaultAgentRunner(AgentRunner):
 
                 elif event_type == "error":
                     error_msg = data.get("message", "Unknown Coze API error")
-                    yield AgentRunResult.run_failed(
+                    yield AgentRunResult.run_failed(ctx.run_id,
                         error=f"Coze API error: {error_msg}",
                         code="coze.api_error",
                     )
@@ -331,26 +331,26 @@ class DefaultAgentRunner(AgentRunner):
                 final_content = f"🤔\n{full_reasoning}\n💬\n{final_content}".strip()
 
             if not has_response:
-                yield AgentRunResult.run_failed(
+                yield AgentRunResult.run_failed(ctx.run_id,
                     error="Coze API returned no response",
                     code="coze.empty_response",
                 )
                 return
 
             # Yield final message
-            yield AgentRunResult.message_delta(
+            yield AgentRunResult.message_delta(ctx.run_id,
                 MessageChunk(role="assistant", content=final_content, is_final=True)
             )
 
         except CozeAPIError as e:
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
             return
         except Exception as e:
             logger.exception(f"Coze runner unexpected error: {e}")
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=f"Coze runner error: {e}",
                 code="coze.unexpected_error",
             )
@@ -360,10 +360,10 @@ class DefaultAgentRunner(AgentRunner):
 
         # Update state with conversation_id for next run (scoped state)
         if final_conversation_id:
-            yield AgentRunResult.state_updated(
+            yield AgentRunResult.state_updated(ctx.run_id,
                 "external.conversation_id",
                 final_conversation_id,
                 scope="conversation",
             )
 
-        yield AgentRunResult.run_completed()
+        yield AgentRunResult.run_completed(ctx.run_id)

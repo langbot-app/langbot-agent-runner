@@ -30,6 +30,14 @@ THINK_START = "႑"
 THINK_END = "႐"
 
 
+def _get_adapter_params(ctx: AgentRunContext) -> dict[str, typing.Any]:
+    """Read single-run business params from adapter.extra.params."""
+    if ctx.adapter is None:
+        return {}
+    params = (ctx.adapter.extra or {}).get("params")
+    return dict(params) if isinstance(params, dict) else {}
+
+
 class DefaultAgentRunner(AgentRunner):
     """Real AgentRunner for DashScope (阿里云百炼) API.
 
@@ -102,8 +110,8 @@ class DefaultAgentRunner(AgentRunner):
         return ctx.input.to_text()
 
     def _get_biz_params(self, ctx: AgentRunContext) -> dict[str, typing.Any]:
-        """Get business parameters for workflow from ctx.params."""
-        return dict(ctx.params or {})
+        """Get business parameters for workflow from adapter params."""
+        return _get_adapter_params(ctx)
 
     async def run(self, ctx: AgentRunContext) -> typing.AsyncGenerator[AgentRunResult, None]:
         """Run the DashScope agent.
@@ -113,7 +121,7 @@ class DefaultAgentRunner(AgentRunner):
         try:
             config = self._validate_config(ctx)
         except DashScopeConfigError as e:
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
@@ -138,14 +146,14 @@ class DefaultAgentRunner(AgentRunner):
                 async for result in self._run_agent(ctx, client, input_text, session_id):
                     yield result
         except DashScopeAPIError as e:
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
             return
         except Exception as e:
             logger.exception(f"DashScope runner unexpected error: {e}")
-            yield AgentRunResult.run_failed(
+            yield AgentRunResult.run_failed(ctx.run_id,
                 error=f"DashScope runner error: {e}",
                 code="dashscope.unexpected_error",
             )
@@ -170,7 +178,7 @@ class DefaultAgentRunner(AgentRunner):
         think_end = False
 
         # Check if thinking should be enabled (default: True)
-        # Can be controlled via ctx.params if needed
+        # Can be controlled via adapter params if needed
         enable_thinking = True
 
         # Use sync iterator since dashscope SDK is synchronous
@@ -232,7 +240,7 @@ class DefaultAgentRunner(AgentRunner):
 
             # Yield periodically or on final chunk
             if pending_content:
-                yield AgentRunResult.message_delta(
+                yield AgentRunResult.message_delta(ctx.run_id,
                     MessageChunk(
                         role="assistant",
                         content=pending_content,
@@ -244,13 +252,13 @@ class DefaultAgentRunner(AgentRunner):
 
         # Update state with session_id for next run
         if final_session_id:
-            yield AgentRunResult.state_updated(
+            yield AgentRunResult.state_updated(ctx.run_id,
                 "external.conversation_id",
                 final_session_id,
                 scope="conversation",
             )
 
-        yield AgentRunResult.run_completed()
+        yield AgentRunResult.run_completed(ctx.run_id)
 
     async def _run_workflow(
         self,
@@ -321,7 +329,7 @@ class DefaultAgentRunner(AgentRunner):
 
             # Yield periodically or on final chunk
             if pending_content:
-                yield AgentRunResult.message_delta(
+                yield AgentRunResult.message_delta(ctx.run_id,
                     MessageChunk(
                         role="assistant",
                         content=pending_content,
@@ -333,10 +341,10 @@ class DefaultAgentRunner(AgentRunner):
 
         # Update state with session_id for next run
         if final_session_id:
-            yield AgentRunResult.state_updated(
+            yield AgentRunResult.state_updated(ctx.run_id,
                 "external.conversation_id",
                 final_session_id,
                 scope="conversation",
             )
 
-        yield AgentRunResult.run_completed()
+        yield AgentRunResult.run_completed(ctx.run_id)
