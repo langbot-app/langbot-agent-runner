@@ -41,6 +41,7 @@ or storage APIs.
 | `dify-agent` | `plugin:langbot/dify-agent/default` | `dify-service-api` | Dify application integration |
 | `n8n-agent` | `plugin:langbot/n8n-agent/default` | `n8n-service-api` | n8n workflow webhook integration |
 | `coze-agent` | `plugin:langbot/coze-agent/default` | `coze-api` | Coze (扣子) bot integration |
+| `claude-code-agent` | `plugin:langbot/claude-code-agent/default` | - | Local Claude Code CLI integration |
 | `dashscope-agent` | `plugin:langbot/dashscope-agent/default` | `dashscope-app-api` | Aliyun DashScope (百炼) integration |
 | `langflow-agent` | `plugin:langbot/langflow-agent/default` | `langflow-api` | Langflow flow integration |
 | `tbox-agent` | `plugin:langbot/tbox-agent/default` | `tbox-app-api` | Ant Tbox (百宝箱) integration |
