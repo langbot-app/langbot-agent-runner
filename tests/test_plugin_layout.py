@@ -10,6 +10,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIRS = {
     "claude-code-agent",
+    "codex-agent",
     "coze-agent",
     "dashscope-agent",
     "dify-agent",
@@ -59,11 +60,13 @@ def test_official_external_runner_plugins_have_protocol_v1_manifests() -> None:
         assert runner["execution"]["python"]["attr"] == "DefaultAgentRunner"
 
 
-def test_readme_lists_claude_code_runner_id() -> None:
+def test_readme_lists_code_runner_ids() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "`claude-code-agent`" in readme
     assert "`plugin:langbot/claude-code-agent/default`" in readme
+    assert "`codex-agent`" in readme
+    assert "`plugin:langbot/codex-agent/default`" in readme
 
 
 def test_runner_sources_do_not_read_capabilities_from_context() -> None:
@@ -584,3 +587,279 @@ def test_claude_code_runner_timeout_is_structured(monkeypatch) -> None:
     assert results[0].data["code"] == "claude_code.timeout"
     assert results[0].data["retryable"] is True
     assert captured == {"killed": True, "waited": True}
+
+
+def test_codex_runner_dry_run_returns_mock_response() -> None:
+    module = _load_runner_module("codex-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    ctx = _agent_run_context(
+        text="write a test",
+        config={
+            "dry-run": True,
+            "mock-response": "mocked codex",
+        },
+    )
+
+    results = asyncio.run(_collect_results(runner, ctx))
+
+    assert [result.type.value for result in results] == ["message.completed", "run.completed"]
+    assert results[0].data["message"]["content"] == "mocked codex"
+
+
+def test_codex_runner_invokes_configured_cli(monkeypatch, tmp_path) -> None:
+    module = _load_runner_module("codex-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    captured = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, stdin):
+            captured["stdin"] = stdin
+            output_path = Path(captured["command"][captured["command"].index("--output-last-message") + 1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("assistant output", encoding="utf-8")
+            return (
+                b'{"type":"thread.started","thread_id":"thread_new"}\n{"type":"turn.completed","usage":{"input_tokens":1}}\n',
+                b"",
+            )
+
+        def kill(self):
+            captured["killed"] = True
+
+        async def wait(self):
+            return None
+
+    async def fake_create_subprocess_exec(*command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    ctx = _agent_run_context(
+        text="summarize this",
+        config={
+            "cli-command": "codex",
+            "working-directory": str(tmp_path),
+            "inject-context": False,
+            "model": "gpt-5.5",
+            "resume": False,
+            "timeout": 15,
+        },
+    )
+
+    results = asyncio.run(_collect_results(runner, ctx))
+
+    last_message_path = tmp_path / ".langbot" / "agent-runner" / "run_1" / "codex-last-message.txt"
+    assert captured["command"] == (
+        "codex",
+        "exec",
+        "--json",
+        "--output-last-message",
+        str(last_message_path),
+        "--model",
+        "gpt-5.5",
+        "--sandbox",
+        "read-only",
+        "--cd",
+        str(tmp_path),
+        "--skip-git-repo-check",
+        "-",
+    )
+    assert captured["stdin"] == b"summarize this"
+    assert captured["kwargs"]["stdin"] is module.asyncio.subprocess.PIPE
+    assert captured["kwargs"]["cwd"] == str(tmp_path)
+    assert [result.type.value for result in results] == [
+        "message.completed",
+        "state.updated",
+        "state.updated",
+        "run.completed",
+    ]
+    assert results[0].data["message"]["content"] == "assistant output"
+    assert results[1].data == {
+        "scope": "conversation",
+        "key": "external.session_id",
+        "value": "thread_new",
+    }
+    assert results[2].data == {
+        "scope": "conversation",
+        "key": "external.working_directory",
+        "value": str(tmp_path),
+    }
+    assert results[-1].data["external"]["provider"] == "codex"
+
+
+def test_codex_runner_resumes_existing_thread(monkeypatch, tmp_path) -> None:
+    module = _load_runner_module("codex-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    captured = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, stdin):
+            captured["stdin"] = stdin
+            output_path = Path(captured["command"][captured["command"].index("--output-last-message") + 1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("resumed output", encoding="utf-8")
+            return b'{"type":"thread.started","thread_id":"thread_resumed"}\n', b""
+
+        def kill(self):
+            captured["killed"] = True
+
+        async def wait(self):
+            return None
+
+    async def fake_create_subprocess_exec(*command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    ctx = _agent_run_context(
+        text="continue",
+        config={
+            "working-directory": str(tmp_path),
+            "inject-context": False,
+            "timeout": 15,
+        },
+    )
+
+    results = asyncio.run(_collect_results(runner, ctx))
+
+    last_message_path = tmp_path / ".langbot" / "agent-runner" / "run_1" / "codex-last-message.txt"
+    assert captured["command"] == (
+        "codex",
+        "exec",
+        "resume",
+        "--json",
+        "--output-last-message",
+        str(last_message_path),
+        "--skip-git-repo-check",
+        "sess_existing",
+        "-",
+    )
+    assert captured["stdin"] == b"continue"
+    assert results[0].data["message"]["content"] == "resumed output"
+    assert results[1].data["value"] == "thread_resumed"
+
+
+def test_codex_runner_injects_context_skills_and_mcp_config(monkeypatch, tmp_path) -> None:
+    module = _load_runner_module("codex-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    captured = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, stdin):
+            captured["stdin"] = stdin
+            output_path = Path(captured["command"][captured["command"].index("--output-last-message") + 1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("assistant output", encoding="utf-8")
+            return b'{"type":"thread.started","thread_id":"thread_new"}\n', b""
+
+        def kill(self):
+            captured["killed"] = True
+
+        async def wait(self):
+            return None
+
+    async def fake_create_subprocess_exec(*command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    ctx = _agent_run_context(
+        text="use langbot context",
+        config={
+            "cli-command": "codex",
+            "working-directory": str(tmp_path),
+            "context-directory": ".langbot/test-agent-runner",
+            "resume": False,
+            "skills-json": {
+                "skills": [
+                    {
+                        "name": "langbot-support",
+                        "content": "# LangBot Support\nUse scoped resources only.",
+                        "files": {"references/checklist.md": "check resources"},
+                    }
+                ]
+            },
+            "mcp-config-json": {
+                "mcpServers": {
+                    "langbot-agent": {
+                        "command": "langbot-mcp",
+                        "args": ["serve"],
+                    }
+                }
+            },
+            "environment-json": {"HTTP_PROXY": "http://127.0.0.1:7890"},
+            "timeout": 15,
+        },
+    )
+
+    results = asyncio.run(_collect_results(runner, ctx))
+
+    run_dir = tmp_path / ".langbot" / "test-agent-runner" / "run_1"
+    context_json = run_dir / "agent-context.json"
+    context_markdown = run_dir / "LANGBOT_CONTEXT.md"
+    mcp_config = run_dir / "mcp.json"
+    skill_file = run_dir / "codex-skills" / "langbot-support" / "SKILL.md"
+    skill_reference = run_dir / "codex-skills" / "langbot-support" / "references" / "checklist.md"
+
+    assert "--config" in captured["command"]
+    assert 'mcp_servers.langbot_agent.command="langbot-mcp"' in captured["command"]
+    assert 'mcp_servers.langbot_agent.args=["serve"]' in captured["command"]
+    assert captured["kwargs"]["cwd"] == str(tmp_path)
+    assert captured["kwargs"]["env"]["HTTP_PROXY"] == "http://127.0.0.1:7890"
+    assert b"LangBot prepared read-only run context" in captured["stdin"]
+    assert str(context_json).encode("utf-8") in captured["stdin"]
+    assert b"use langbot context" in captured["stdin"]
+
+    assert context_json.exists()
+    assert context_markdown.exists()
+    assert mcp_config.exists()
+    assert (run_dir / "codex-events.jsonl").read_text(encoding="utf-8") == '{"type":"thread.started","thread_id":"thread_new"}\n'
+    assert skill_file.read_text(encoding="utf-8") == "# LangBot Support\nUse scoped resources only."
+    assert skill_reference.read_text(encoding="utf-8") == "check resources"
+
+    context_payload = module.json.loads(context_json.read_text(encoding="utf-8"))
+    assert context_payload["schema"] == "langbot.agent_runner.external_harness_context.v1"
+    assert context_payload["event"]["event_type"] == "message.received"
+    assert context_payload["input"]["text"] == "use langbot context"
+    assert module.json.loads(mcp_config.read_text(encoding="utf-8"))["mcpServers"]["langbot-agent"]["command"] == "langbot-mcp"
+    assert [result.type.value for result in results] == [
+        "message.completed",
+        "state.updated",
+        "state.updated",
+        "run.completed",
+    ]
+    assert results[-1].data["external"]["provider"] == "codex"
+
+
+def test_codex_runner_command_not_found_is_structured(monkeypatch) -> None:
+    module = _load_runner_module("codex-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+
+    async def fake_create_subprocess_exec(*command, **kwargs):
+        raise FileNotFoundError(command[0])
+
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    ctx = _agent_run_context(
+        text="hello",
+        config={
+            "cli-command": "missing-codex",
+            "working-directory": "/tmp",
+            "inject-context": False,
+            "resume": False,
+            "timeout": 15,
+        },
+    )
+
+    results = asyncio.run(_collect_results(runner, ctx))
+
+    assert [result.type.value for result in results] == ["run.failed"]
+    assert results[0].data["code"] == "codex.command_not_found"
+    assert "missing-codex" in results[0].data["error"]

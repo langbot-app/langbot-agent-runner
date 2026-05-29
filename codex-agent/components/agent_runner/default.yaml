@@ -1,0 +1,209 @@
+apiVersion: langbot/v1
+kind: AgentRunner
+metadata:
+  name: default
+  label:
+    en_US: Codex
+    zh_Hans: Codex
+  description:
+    en_US: Run the local Codex CLI with the current input text.
+    zh_Hans: 使用当前输入文本调用本机 Codex CLI。
+spec:
+  protocol_version: "1"
+  config:
+    - name: cli-command
+      label:
+        en_US: CLI Command
+        zh_Hans: CLI 命令
+      type: string
+      required: false
+      default: codex
+    - name: extra-args
+      label:
+        en_US: Extra Args
+        zh_Hans: 额外参数
+      type: string
+      required: false
+      default: ''
+    - name: working-directory
+      label:
+        en_US: Working Directory
+        zh_Hans: 工作目录
+      type: string
+      required: false
+      default: ''
+    - name: inject-context
+      label:
+        en_US: Inject Context
+        zh_Hans: 注入上下文
+      type: boolean
+      required: false
+      default: true
+    - name: context-directory
+      label:
+        en_US: Context Directory
+        zh_Hans: 上下文目录
+      type: string
+      required: false
+      default: .langbot/agent-runner
+    - name: inject-skills
+      label:
+        en_US: Inject Skills
+        zh_Hans: 注入 Skills
+      type: boolean
+      required: false
+      default: true
+    - name: skills-json
+      label:
+        en_US: Skills JSON
+        zh_Hans: Skills JSON
+      type: string
+      required: false
+      default: ''
+    - name: mcp-config-json
+      label:
+        en_US: MCP Config JSON
+        zh_Hans: MCP 配置 JSON
+      type: string
+      required: false
+      default: ''
+    - name: mcp-config-file
+      label:
+        en_US: MCP Config File
+        zh_Hans: MCP 配置文件
+      type: string
+      required: false
+      default: ''
+    - name: model
+      label:
+        en_US: Model
+        zh_Hans: 模型
+      type: string
+      required: false
+      default: ''
+    - name: profile
+      label:
+        en_US: Profile
+        zh_Hans: 配置 Profile
+      type: string
+      required: false
+      default: ''
+    - name: sandbox
+      label:
+        en_US: Sandbox
+        zh_Hans: 沙箱
+      type: select
+      required: false
+      default: read-only
+      options:
+        - name: read-only
+          label:
+            en_US: Read Only
+            zh_Hans: 只读
+        - name: workspace-write
+          label:
+            en_US: Workspace Write
+            zh_Hans: 工作区写入
+        - name: danger-full-access
+          label:
+            en_US: Danger Full Access
+            zh_Hans: 完全访问
+    - name: output-format
+      label:
+        en_US: Output Format
+        zh_Hans: 输出格式
+      type: select
+      required: false
+      default: json
+      options:
+        - name: json
+          label:
+            en_US: JSONL Events
+            zh_Hans: JSONL 事件
+        - name: text
+          label:
+            en_US: Text
+            zh_Hans: 文本
+    - name: skip-git-repo-check
+      label:
+        en_US: Skip Git Repo Check
+        zh_Hans: 跳过 Git 仓库检查
+      type: boolean
+      required: false
+      default: true
+    - name: ephemeral
+      label:
+        en_US: Ephemeral
+        zh_Hans: 临时会话
+      type: boolean
+      required: false
+      default: false
+    - name: ignore-rules
+      label:
+        en_US: Ignore Rules
+        zh_Hans: 忽略规则
+      type: boolean
+      required: false
+      default: false
+    - name: config-overrides
+      label:
+        en_US: Config Overrides
+        zh_Hans: 配置覆盖
+      type: string
+      required: false
+      default: ''
+    - name: environment-json
+      label:
+        en_US: Environment JSON
+        zh_Hans: 环境变量 JSON
+      type: string
+      required: false
+      default: ''
+    - name: resume
+      label:
+        en_US: Resume Session
+        zh_Hans: 恢复会话
+      type: boolean
+      required: false
+      default: true
+    - name: timeout
+      label:
+        en_US: Timeout
+        zh_Hans: 超时时间
+      type: integer
+      required: false
+      default: 300
+    - name: dry-run
+      label:
+        en_US: Dry Run
+        zh_Hans: Dry Run
+      type: boolean
+      required: false
+      default: false
+    - name: mock-response
+      label:
+        en_US: Mock Response
+        zh_Hans: 模拟响应
+      type: string
+      required: false
+      default: ''
+  capabilities:
+    streaming: false
+    tool_calling: true
+    knowledge_retrieval: true
+    multimodal_input: false
+    event_context: true
+    platform_api: false
+    interrupt: false
+    stateful_session: true
+  permissions:
+    models: []
+    tools: ["detail", "call"]
+    knowledge_bases: ["list", "retrieve"]
+    storage: []
+    files: []
+    platform_api: []
+execution:
+  python:
+    path: default.py
+    attr: DefaultAgentRunner
