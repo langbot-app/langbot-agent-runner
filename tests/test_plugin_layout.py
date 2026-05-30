@@ -69,6 +69,12 @@ def test_readme_lists_code_runner_ids() -> None:
     assert "`plugin:langbot/codex-agent/default`" in readme
 
 
+def test_code_runners_request_history_for_langbot_mcp_bridge() -> None:
+    for plugin_dir in {"claude-code-agent", "codex-agent"}:
+        runner = _load_yaml(ROOT / plugin_dir / "components" / "agent_runner" / "default.yaml")
+        assert "page" in runner["spec"]["permissions"].get("history", [])
+
+
 def test_runner_sources_do_not_read_capabilities_from_context() -> None:
     for plugin_dir in PLUGIN_DIRS:
         source = (ROOT / plugin_dir / "components" / "agent_runner" / "default.py").read_text(encoding="utf-8")
@@ -184,6 +190,10 @@ def _agent_run_context(*, text: str = "hello", config: dict | None = None):
         AgentTrigger,
         DeliveryContext,
     )
+    from langbot_plugin.api.entities.builtin.agent_runner.context_access import (
+        ContextAccess,
+        ContextAPICapabilities,
+    )
 
     return AgentRunContext(
         run_id="run_1",
@@ -195,7 +205,13 @@ def _agent_run_context(*, text: str = "hello", config: dict | None = None):
         ),
         input=AgentInput(text=text),
         delivery=DeliveryContext(surface="pipeline"),
-        resources=AgentResources(),
+        resources=AgentResources.model_validate({
+            "knowledge_bases": [{"kb_id": "kb_1"}],
+            "tools": [{"tool_name": "weather"}],
+        }),
+        context=ContextAccess(
+            available_apis=ContextAPICapabilities(history_page=True),
+        ),
         runtime=AgentRuntimeContext(),
         config=config or {},
         state=AgentRunState(

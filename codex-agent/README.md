@@ -59,12 +59,13 @@ owned skills and external MCP resources can still be projected through
 `skills-json`, `mcp-config-json`, or Codex config overrides.
 
 When `enable-langbot-mcp=true`, the runner calls the SDK base helper to create a
-per-run LangBot MCP bridge. That bridge exposes the SDK-owned annotated
-`AgentRunExternalTools` surface and delegates all LangBot asset access through
-`AgentRunAPIProxy`; this runner only merges the generated MCP server config into
-Codex `--config mcp_servers.*` overrides. LangBot bridge tools are marked with
-Codex `approval_mode="approve"` so non-interactive runs can actually call the
-run-scoped bridge; LangBot still performs the resource authorization.
+per-run LangBot MCP bridge. That bridge exposes only the tools authorized for
+the current run from the SDK-owned annotated `AgentRunExternalTools` surface and
+delegates all LangBot asset access through `AgentRunAPIProxy`; this runner only
+merges the generated MCP server config into Codex `--config mcp_servers.*`
+overrides. LangBot bridge tools are marked with Codex `approval_mode="approve"`
+so non-interactive runs can actually call the run-scoped bridge; LangBot still
+performs the resource authorization.
 
 The runner writes Codex JSONL stdout to `codex-events.jsonl` in the run
 directory, and writes non-empty stderr to `codex-stderr.log`. These files are

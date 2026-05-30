@@ -60,11 +60,11 @@ files. LangBot-owned skills and external MCP resources can still be projected
 through `skills-json` and `mcp-config-json`.
 
 When `enable-langbot-mcp=true`, the runner calls the SDK base helper to create a
-per-run LangBot MCP bridge. That bridge exposes the SDK-owned annotated
-`AgentRunExternalTools` surface and delegates all LangBot asset access through
-`AgentRunAPIProxy`; this runner only merges the generated MCP server config into
-Claude Code's MCP config and adds the LangBot MCP tool pattern to
-`--allowedTools`.
+per-run LangBot MCP bridge. That bridge exposes only the tools authorized for
+the current run from the SDK-owned annotated `AgentRunExternalTools` surface and
+delegates all LangBot asset access through `AgentRunAPIProxy`; this runner only
+merges the generated MCP server config into Claude Code's MCP config and adds
+the LangBot MCP tool pattern to `--allowedTools`.
 
 This plugin intentionally does not implement sandboxing, workspace mounting, or
 tool policy management. In real mode it requires a working local Claude Code CLI

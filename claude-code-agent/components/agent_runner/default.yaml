@@ -221,6 +221,7 @@ spec:
     models: []
     tools: ["detail", "call"]
     knowledge_bases: ["list", "retrieve"]
+    history: ["page"]
     storage: []
     files: []
     platform_api: []
