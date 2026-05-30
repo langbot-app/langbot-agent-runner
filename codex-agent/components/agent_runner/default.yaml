@@ -95,6 +95,26 @@ spec:
       type: string
       required: false
       default: ''
+    - name: approval-policy
+      label:
+        en_US: Approval Policy
+        zh_Hans: 批准策略
+      type: select
+      required: false
+      default: never
+      options:
+        - name: never
+          label:
+            en_US: Never Prompt
+            zh_Hans: 从不请求
+        - name: on-request
+          label:
+            en_US: On Request
+            zh_Hans: 按需请求
+        - name: on-failure
+          label:
+            en_US: On Failure
+            zh_Hans: 失败时请求
     - name: sandbox
       label:
         en_US: Sandbox

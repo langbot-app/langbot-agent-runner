@@ -29,6 +29,12 @@ DRY_RUN_ENV_NAMES = (
 )
 
 DEFAULT_CONTEXT_DIRECTORY = ".langbot/agent-runner"
+LANGBOT_AGENT_MCP_AUTO_APPROVE_TOOLS = (
+    "langbot_call_tool",
+    "langbot_get_current_event",
+    "langbot_history_page",
+    "langbot_retrieve_knowledge",
+)
 
 
 class PreparedInjection:
@@ -154,6 +160,26 @@ def _safe_child_path(base_dir: pathlib.Path, relative_path: typing.Any) -> pathl
     return base_dir / path
 
 
+def _add_langbot_mcp_tool_approvals(data: dict[str, typing.Any]) -> None:
+    servers = data.get("mcpServers") or data.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return
+
+    server = servers.get(LANGBOT_AGENT_MCP_SERVER_NAME)
+    if not isinstance(server, dict):
+        return
+
+    tools = server.setdefault("tools", {})
+    if not isinstance(tools, dict):
+        tools = {}
+        server["tools"] = tools
+
+    for tool_name in LANGBOT_AGENT_MCP_AUTO_APPROVE_TOOLS:
+        tool_config = tools.setdefault(tool_name, {})
+        if isinstance(tool_config, dict):
+            tool_config.setdefault("approval_mode", "approve")
+
+
 class DefaultAgentRunner(AgentRunner):
     """Minimal AgentRunner for the local Codex CLI."""
 
@@ -180,6 +206,7 @@ class DefaultAgentRunner(AgentRunner):
             "mcp_config_file": config.get("mcp-config-file", ""),
             "model": config.get("model", ""),
             "profile": config.get("profile", ""),
+            "approval_policy": config.get("approval-policy", "never") or "",
             "sandbox": config.get("sandbox", "read-only") or "",
             "output_format": config.get("output-format", "json") or "json",
             "skip_git_repo_check": _to_bool(config.get("skip-git-repo-check", True)),
@@ -244,6 +271,8 @@ class DefaultAgentRunner(AgentRunner):
             command.append("--ephemeral")
         if config["ignore_rules"]:
             command.append("--ignore-rules")
+        if config["approval_policy"]:
+            command.extend(["--config", f"approval_policy={_toml_literal(str(config['approval_policy']))}"])
 
         for item in [*config["config_overrides"], *(mcp_config_overrides or [])]:
             command.extend(["--config", item])
@@ -427,6 +456,7 @@ class DefaultAgentRunner(AgentRunner):
 
         if langbot_mcp_server:
             data = merge_mcp_server_config(data, langbot_mcp_server)
+            _add_langbot_mcp_tool_approvals(data)
         if not data:
             return "", None
 
@@ -451,6 +481,18 @@ class DefaultAgentRunner(AgentRunner):
             for key in ("command", "args", "env", "url", "headers"):
                 if key in server:
                     overrides.append(f"mcp_servers.{safe_name}.{key}={_toml_literal(server[key])}")
+            tools = server.get("tools") or {}
+            if isinstance(tools, dict):
+                for tool_name, tool_config in tools.items():
+                    if not isinstance(tool_config, dict):
+                        continue
+                    safe_tool_name = _safe_name(tool_name, "tool").replace("-", "_")
+                    for key in ("approval_mode",):
+                        if key in tool_config:
+                            overrides.append(
+                                f"mcp_servers.{safe_name}.tools.{safe_tool_name}.{key}="
+                                f"{_toml_literal(tool_config[key])}"
+                            )
         return overrides
 
     def _prepare_injection(

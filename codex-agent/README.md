@@ -28,6 +28,7 @@ assistant message.
 | `mcp-config-file` | empty | Existing MCP config file path to reference in the prompt; relative paths resolve from `working-directory`. |
 | `model` | empty | Optional Codex `--model` argument. |
 | `profile` | empty | Optional Codex `--profile` argument for new sessions. |
+| `approval-policy` | `never` | Codex approval policy passed as `approval_policy`. The default keeps non-interactive LangBot-triggered tool calls from being cancelled while LangBot still owns runner resource authorization. |
 | `sandbox` | `read-only` | Codex sandbox mode for new sessions. |
 | `output-format` | `json` | `json` uses Codex JSONL events and captures `thread_id`; `text` parses plain stdout or the last-message file. |
 | `skip-git-repo-check` | `true` | Add `--skip-git-repo-check`, useful for LangBot workspaces that are not a single Git repository. |
@@ -61,7 +62,9 @@ When `enable-langbot-mcp=true`, the runner calls the SDK base helper to create a
 per-run LangBot MCP bridge. That bridge exposes the SDK-owned annotated
 `AgentRunExternalTools` surface and delegates all LangBot asset access through
 `AgentRunAPIProxy`; this runner only merges the generated MCP server config into
-Codex `--config mcp_servers.*` overrides.
+Codex `--config mcp_servers.*` overrides. LangBot bridge tools are marked with
+Codex `approval_mode="approve"` so non-interactive runs can actually call the
+run-scoped bridge; LangBot still performs the resource authorization.
 
 The runner writes Codex JSONL stdout to `codex-events.jsonl` in the run
 directory, and writes non-empty stderr to `codex-stderr.log`. These files are

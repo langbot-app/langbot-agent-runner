@@ -928,6 +928,8 @@ def test_codex_runner_invokes_configured_cli(monkeypatch, tmp_path) -> None:
         "--cd",
         str(tmp_path),
         "--skip-git-repo-check",
+        "--config",
+        'approval_policy="never"',
         "-",
     )
     assert captured["stdin"] == b"summarize this"
@@ -1000,6 +1002,8 @@ def test_codex_runner_resumes_existing_thread(monkeypatch, tmp_path) -> None:
         "--output-last-message",
         str(last_message_path),
         "--skip-git-repo-check",
+        "--config",
+        'approval_policy="never"',
         "sess_existing",
         "-",
     )
@@ -1171,7 +1175,9 @@ def test_codex_runner_uses_shared_langbot_mcp_bridge(monkeypatch, tmp_path) -> N
     assert "--config" in captured["command"]
     assert 'mcp_servers.langbot_agent.command="python"' in captured["command"]
     assert 'mcp_servers.langbot_agent.args=["-m", "fake_langbot_mcp"]' in captured["command"]
+    assert 'mcp_servers.langbot_agent.tools.langbot_call_tool.approval_mode="approve"' in captured["command"]
     assert mcp_data["mcpServers"]["langbot_agent"]["command"] == "python"
+    assert mcp_data["mcpServers"]["langbot_agent"]["tools"]["langbot_call_tool"]["approval_mode"] == "approve"
     assert b"LangBot MCP server: langbot_agent" in captured["stdin"]
     assert [result.type.value for result in results][:1] == ["message.completed"]
 
