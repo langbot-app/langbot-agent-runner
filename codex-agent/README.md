@@ -21,6 +21,7 @@ assistant message.
 | `working-directory` | empty | Directory used as Codex's project cwd. If empty, the runner reuses stored `external.working_directory` or falls back to its current process cwd. |
 | `inject-context` | `true` | Write LangBot run context files and prepend their paths to the Codex prompt. |
 | `context-directory` | `.langbot/agent-runner` | Directory, relative to `working-directory` unless absolute, where per-run context files are written. |
+| `enable-langbot-mcp` | `false` | Start the SDK-owned per-run LangBot MCP bridge and merge it into the generated Codex MCP config overrides. |
 | `inject-skills` | `true` | Write configured skills into the per-run `codex-skills/<name>/SKILL.md` directory and mention the directory in the prompt. |
 | `skills-json` | empty | Optional JSON array, or `{ "skills": [...] }`, with entries like `{ "name": "support-playbook", "content": "..." }`. |
 | `mcp-config-json` | empty | Optional MCP config JSON. The runner writes it to the run directory and best-effort maps `mcpServers` to Codex `--config mcp_servers.*` overrides. |
@@ -53,10 +54,14 @@ stored thread id.
 LangBot still delivers the full Protocol v1 run context, including trigger,
 event, actor, subject, delivery, and state fields. This minimal runner passes
 that event/resource/state summary to Codex as read-only context files. LangBot
-owned skills and MCP resources should be converted by Host or binding
-configuration into `skills-json`, `mcp-config-json`, or Codex config overrides;
-this runner only adapts those scoped resources into Codex's native harness
-shape.
+owned skills and external MCP resources can still be projected through
+`skills-json`, `mcp-config-json`, or Codex config overrides.
+
+When `enable-langbot-mcp=true`, the runner calls the SDK base helper to create a
+per-run LangBot MCP bridge. That bridge exposes the SDK-owned annotated
+`AgentRunExternalTools` surface and delegates all LangBot asset access through
+`AgentRunAPIProxy`; this runner only merges the generated MCP server config into
+Codex `--config mcp_servers.*` overrides.
 
 The runner writes Codex JSONL stdout to `codex-events.jsonl` in the run
 directory, and writes non-empty stderr to `codex-stderr.log`. These files are

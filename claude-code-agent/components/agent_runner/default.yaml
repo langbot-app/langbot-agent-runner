@@ -46,6 +46,13 @@ spec:
       type: string
       required: false
       default: .langbot/agent-runner
+    - name: enable-langbot-mcp
+      label:
+        en_US: Enable LangBot MCP Tools
+        zh_Hans: 启用 LangBot MCP 工具
+      type: boolean
+      required: false
+      default: false
     - name: inject-skills
       label:
         en_US: Inject Skills

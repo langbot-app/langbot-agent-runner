@@ -211,6 +211,165 @@ async def _collect_results(runner, ctx):
     return [item async for item in runner.run(ctx)]
 
 
+class RecordingRunAPI:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    async def history_page(self, **kwargs):
+        self.calls.append(("history_page", kwargs))
+        return {"items": [{"text": "history-from-host"}], "has_more": False}
+
+    async def retrieve_knowledge(self, **kwargs):
+        self.calls.append(("retrieve_knowledge", kwargs))
+        return [{"content": f"rag:{kwargs['query_text']}"}]
+
+    async def call_tool(self, **kwargs):
+        self.calls.append(("call_tool", kwargs))
+        return {"ok": True, "tool_name": kwargs["tool_name"], "parameters": kwargs["parameters"]}
+
+
+def _write_fake_mcp_harness(tmp_path: Path) -> Path:
+    script = tmp_path / "fake_mcp_harness.py"
+    script.write_text(
+        r'''
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+def _mcp_call(process, message):
+    process.stdin.write(json.dumps(message) + "\n")
+    process.stdin.flush()
+    line = process.stdout.readline()
+    if not line:
+        raise RuntimeError("MCP proxy returned no response")
+    data = json.loads(line)
+    if "error" in data:
+        raise RuntimeError(data["error"]["message"])
+    return data["result"]
+
+
+stdin = sys.stdin.read()
+match = re.search(r"(?:Claude Code|Codex) MCP config: (.+)", stdin)
+if not match:
+    raise SystemExit("missing MCP config path in runner prompt")
+
+mcp_config = json.loads(Path(match.group(1).strip()).read_text(encoding="utf-8"))
+server = mcp_config["mcpServers"]["langbot_agent"]
+env = os.environ.copy()
+env.update(server.get("env") or {})
+process = subprocess.Popen(
+    [server["command"], *server.get("args", [])],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True,
+    env=env,
+)
+try:
+    _mcp_call(process, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}})
+    tools = _mcp_call(process, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+    tool_names = {tool["name"] for tool in tools["tools"]}
+    for required in {"langbot_history_page", "langbot_retrieve_knowledge", "langbot_call_tool"}:
+        if required not in tool_names:
+            raise RuntimeError(f"missing MCP tool: {required}")
+
+    history = _mcp_call(
+        process,
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "langbot_history_page", "arguments": {"limit": 2}},
+        },
+    )["structuredContent"]
+    rag = _mcp_call(
+        process,
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "langbot_retrieve_knowledge",
+                "arguments": {"kb_id": "kb_1", "query_text": "agent-runner", "top_k": 2},
+            },
+        },
+    )["structuredContent"]["result"]
+    tool = _mcp_call(
+        process,
+        {
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "langbot_call_tool",
+                "arguments": {"tool_name": "weather", "parameters": {"city": "Shanghai"}},
+            },
+        },
+    )["structuredContent"]
+finally:
+    assert process.stdin is not None
+    process.stdin.close()
+    process.wait(timeout=10)
+
+content = (
+    "MCP_ACTIONS_OK "
+    f"HISTORY={history['items'][0]['text']} "
+    f"RAG={rag[0]['content']} "
+    f"TOOL={tool['tool_name']}:{tool['parameters']['city']}"
+)
+
+if "--output-last-message" in sys.argv:
+    output_path = Path(sys.argv[sys.argv.index("--output-last-message") + 1])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(content, encoding="utf-8")
+    print(json.dumps({"type": "thread.started", "thread_id": "thread_mcp_actions"}))
+else:
+    print(json.dumps({"type": "result", "session_id": "sess_mcp_actions", "result": content}))
+''',
+        encoding="utf-8",
+    )
+    return script
+
+
+def _expected_langbot_action_calls() -> list[tuple[str, dict]]:
+    return [
+        (
+            "history_page",
+            {
+                "conversation_id": None,
+                "before_cursor": None,
+                "after_cursor": None,
+                "limit": 2,
+                "direction": "backward",
+                "include_artifacts": False,
+            },
+        ),
+        (
+            "retrieve_knowledge",
+            {
+                "kb_id": "kb_1",
+                "query_text": "agent-runner",
+                "top_k": 2,
+                "filters": {},
+            },
+        ),
+        (
+            "call_tool",
+            {
+                "tool_name": "weather",
+                "parameters": {"city": "Shanghai"},
+                "session": {},
+            },
+        ),
+    ]
+
+
 def test_claude_code_runner_dry_run_returns_mock_response() -> None:
     module = _load_runner_module("claude-code-agent")
     runner = object.__new__(module.DefaultAgentRunner)
@@ -487,6 +646,111 @@ def test_claude_code_runner_injects_context_skills_and_mcp_config(monkeypatch, t
     ]
     assert results[-1].data["external"]["provider"] == "claude_code"
     assert results[-1].data["external"]["session_id"] == "sess_new"
+
+
+def test_claude_code_runner_uses_shared_langbot_mcp_bridge(monkeypatch, tmp_path) -> None:
+    module = _load_runner_module("claude-code-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    captured = {}
+
+    class FakeBridge:
+        started = False
+        stopped = False
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+        def mcp_server_config(self):
+            return {
+                "command": "python",
+                "args": ["-m", "fake_langbot_mcp"],
+                "env": {"TOKEN": "run-token"},
+            }
+
+    bridge = FakeBridge()
+    monkeypatch.setattr(runner, "create_external_mcp_bridge", lambda ctx: bridge)
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, stdin):
+            captured["stdin"] = stdin
+            return b'{"type":"result","session_id":"sess_new","result":"assistant output"}\n', b""
+
+        def kill(self):
+            captured["killed"] = True
+
+        async def wait(self):
+            return None
+
+    async def fake_create_subprocess_exec(*command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    ctx = _agent_run_context(
+        text="use langbot mcp",
+        config={
+            "working-directory": str(tmp_path),
+            "enable-langbot-mcp": True,
+            "timeout": 15,
+        },
+    )
+
+    results = asyncio.run(_collect_results(runner, ctx))
+
+    run_dir = tmp_path / ".langbot" / "agent-runner" / "run_1"
+    mcp_config = run_dir / "mcp.json"
+    mcp_data = module.json.loads(mcp_config.read_text(encoding="utf-8"))
+
+    assert bridge.started is True
+    assert bridge.stopped is True
+    assert "--mcp-config" in captured["command"]
+    assert str(mcp_config) in captured["command"]
+    assert "mcp__langbot_agent__*" in captured["command"]
+    assert mcp_data["mcpServers"]["langbot_agent"]["command"] == "python"
+    assert mcp_data["mcpServers"]["langbot_agent"]["args"] == ["-m", "fake_langbot_mcp"]
+    assert b"LangBot MCP server: langbot_agent" in captured["stdin"]
+    assert [result.type.value for result in results][:1] == ["message.completed"]
+
+
+def test_claude_code_runner_external_mcp_bridge_invokes_langbot_actions(monkeypatch, tmp_path) -> None:
+    module = _load_runner_module("claude-code-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    api = RecordingRunAPI()
+    monkeypatch.setattr(runner, "get_run_api", lambda ctx: api)
+
+    harness = _write_fake_mcp_harness(tmp_path)
+    ctx = _agent_run_context(
+        text="use langbot mcp actions",
+        config={
+            "cli-command": f"{sys.executable} {harness}",
+            "working-directory": str(tmp_path),
+            "enable-langbot-mcp": True,
+            "inject-context": False,
+            "timeout": 20,
+        },
+    )
+
+    results = asyncio.run(_collect_results(runner, ctx))
+
+    assert [result.type.value for result in results] == [
+        "message.completed",
+        "state.updated",
+        "state.updated",
+        "run.completed",
+    ]
+    content = results[0].data["message"]["content"]
+    assert "MCP_ACTIONS_OK" in content
+    assert "HISTORY=history-from-host" in content
+    assert "RAG=rag:agent-runner" in content
+    assert "TOOL=weather:Shanghai" in content
+    assert results[1].data["value"] == "sess_mcp_actions"
+    assert api.calls == _expected_langbot_action_calls()
 
 
 def test_claude_code_runner_command_not_found_is_structured(monkeypatch) -> None:
@@ -837,6 +1101,115 @@ def test_codex_runner_injects_context_skills_and_mcp_config(monkeypatch, tmp_pat
         "run.completed",
     ]
     assert results[-1].data["external"]["provider"] == "codex"
+
+
+def test_codex_runner_uses_shared_langbot_mcp_bridge(monkeypatch, tmp_path) -> None:
+    module = _load_runner_module("codex-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    captured = {}
+
+    class FakeBridge:
+        started = False
+        stopped = False
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+        def mcp_server_config(self):
+            return {
+                "command": "python",
+                "args": ["-m", "fake_langbot_mcp"],
+                "env": {"TOKEN": "run-token"},
+            }
+
+    bridge = FakeBridge()
+    monkeypatch.setattr(runner, "create_external_mcp_bridge", lambda ctx: bridge)
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, stdin):
+            captured["stdin"] = stdin
+            output_path = Path(captured["command"][captured["command"].index("--output-last-message") + 1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("assistant output", encoding="utf-8")
+            return b'{"type":"thread.started","thread_id":"thread_new"}\n', b""
+
+        def kill(self):
+            captured["killed"] = True
+
+        async def wait(self):
+            return None
+
+    async def fake_create_subprocess_exec(*command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    ctx = _agent_run_context(
+        text="use langbot mcp",
+        config={
+            "working-directory": str(tmp_path),
+            "enable-langbot-mcp": True,
+            "resume": False,
+            "timeout": 15,
+        },
+    )
+
+    results = asyncio.run(_collect_results(runner, ctx))
+
+    run_dir = tmp_path / ".langbot" / "agent-runner" / "run_1"
+    mcp_config = run_dir / "mcp.json"
+    mcp_data = module.json.loads(mcp_config.read_text(encoding="utf-8"))
+
+    assert bridge.started is True
+    assert bridge.stopped is True
+    assert "--config" in captured["command"]
+    assert 'mcp_servers.langbot_agent.command="python"' in captured["command"]
+    assert 'mcp_servers.langbot_agent.args=["-m", "fake_langbot_mcp"]' in captured["command"]
+    assert mcp_data["mcpServers"]["langbot_agent"]["command"] == "python"
+    assert b"LangBot MCP server: langbot_agent" in captured["stdin"]
+    assert [result.type.value for result in results][:1] == ["message.completed"]
+
+
+def test_codex_runner_external_mcp_bridge_invokes_langbot_actions(monkeypatch, tmp_path) -> None:
+    module = _load_runner_module("codex-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    api = RecordingRunAPI()
+    monkeypatch.setattr(runner, "get_run_api", lambda ctx: api)
+
+    harness = _write_fake_mcp_harness(tmp_path)
+    ctx = _agent_run_context(
+        text="use langbot mcp actions",
+        config={
+            "cli-command": f"{sys.executable} {harness}",
+            "working-directory": str(tmp_path),
+            "enable-langbot-mcp": True,
+            "inject-context": False,
+            "resume": False,
+            "timeout": 20,
+        },
+    )
+
+    results = asyncio.run(_collect_results(runner, ctx))
+
+    assert [result.type.value for result in results] == [
+        "message.completed",
+        "state.updated",
+        "state.updated",
+        "run.completed",
+    ]
+    content = results[0].data["message"]["content"]
+    assert "MCP_ACTIONS_OK" in content
+    assert "HISTORY=history-from-host" in content
+    assert "RAG=rag:agent-runner" in content
+    assert "TOOL=weather:Shanghai" in content
+    assert results[1].data["value"] == "thread_mcp_actions"
+    assert api.calls == _expected_langbot_action_calls()
 
 
 def test_codex_runner_command_not_found_is_structured(monkeypatch) -> None:

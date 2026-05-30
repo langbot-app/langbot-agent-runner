@@ -11,6 +11,7 @@ import re
 import shlex
 import typing
 
+from langbot_plugin.api.agent_tools import LANGBOT_AGENT_MCP_SERVER_NAME, merge_mcp_server_config
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
@@ -39,6 +40,7 @@ class PreparedInjection:
         self.context_json_path = ""
         self.context_markdown_path = ""
         self.skills_directory = ""
+        self.mcp_config_data: dict[str, typing.Any] | None = None
 
 
 def _to_bool(value: typing.Any) -> bool:
@@ -171,6 +173,7 @@ class DefaultAgentRunner(AgentRunner):
             "working_directory": config.get("working-directory", ""),
             "inject_context": _to_bool(config.get("inject-context", True)),
             "context_directory": config.get("context-directory", DEFAULT_CONTEXT_DIRECTORY) or DEFAULT_CONTEXT_DIRECTORY,
+            "enable_langbot_mcp": _to_bool(config.get("enable-langbot-mcp", False)),
             "inject_skills": _to_bool(config.get("inject-skills", True)),
             "skills_json": config.get("skills-json", ""),
             "mcp_config_json": config.get("mcp-config-json", ""),
@@ -406,24 +409,33 @@ class DefaultAgentRunner(AgentRunner):
         working_directory: str,
         run_dir: pathlib.Path,
         config: dict[str, typing.Any],
-    ) -> str:
+        langbot_mcp_server: dict[str, typing.Any] | None = None,
+    ) -> tuple[str, dict[str, typing.Any] | None]:
         configured_file = str(config["mcp_config_file"] or "").strip()
-        if configured_file:
-            return str(_resolve_under_workdir(working_directory, configured_file))
+        if configured_file and not langbot_mcp_server:
+            return str(_resolve_under_workdir(working_directory, configured_file)), None
 
-        data = _loads_json_config(config["mcp_config_json"], "mcp-config-json")
+        if configured_file:
+            configured_path = _resolve_under_workdir(working_directory, configured_file)
+            data = json.loads(configured_path.read_text(encoding="utf-8"))
+        else:
+            data = _loads_json_config(config["mcp_config_json"], "mcp-config-json")
         if not data:
-            return ""
+            data = {}
         if not isinstance(data, dict):
             raise ValueError("mcp-config-json must be a JSON object")
+
+        if langbot_mcp_server:
+            data = merge_mcp_server_config(data, langbot_mcp_server)
+        if not data:
+            return "", None
 
         run_dir.mkdir(parents=True, exist_ok=True)
         path = run_dir / "mcp.json"
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        return str(path)
+        return str(path), data
 
-    def _build_mcp_config_overrides(self, config: dict[str, typing.Any]) -> list[str]:
-        data = _loads_json_config(config["mcp_config_json"], "mcp-config-json")
+    def _build_mcp_config_overrides(self, data: dict[str, typing.Any] | None) -> list[str]:
         if not data or not isinstance(data, dict):
             return []
 
@@ -447,6 +459,7 @@ class DefaultAgentRunner(AgentRunner):
         input_text: str,
         working_directory: str,
         config: dict[str, typing.Any],
+        langbot_mcp_server: dict[str, typing.Any] | None = None,
     ) -> PreparedInjection:
         run_dir = self._run_context_directory(working_directory, ctx, config)
         injection = PreparedInjection()
@@ -460,7 +473,12 @@ class DefaultAgentRunner(AgentRunner):
             )
 
         injection.skills_directory = self._write_skills(run_dir, config)
-        injection.mcp_config_path = self._write_mcp_config(working_directory, run_dir, config)
+        injection.mcp_config_path, injection.mcp_config_data = self._write_mcp_config(
+            working_directory,
+            run_dir,
+            config,
+            langbot_mcp_server,
+        )
 
         prefix_lines = []
         if injection.context_json_path:
@@ -475,6 +493,8 @@ class DefaultAgentRunner(AgentRunner):
             prefix_lines.append(f"- Codex skills directory: {injection.skills_directory}")
         if injection.mcp_config_path:
             prefix_lines.append(f"- Codex MCP config: {injection.mcp_config_path}")
+        if langbot_mcp_server:
+            prefix_lines.append(f"- LangBot MCP server: {LANGBOT_AGENT_MCP_SERVER_NAME}")
 
         if prefix_lines:
             prefix_lines.append("Use these files only as scoped context for the current LangBot event.")
@@ -649,9 +669,23 @@ class DefaultAgentRunner(AgentRunner):
             return
 
         run_dir = self._run_context_directory(working_directory, ctx, config)
+        bridge = None
         try:
-            injection = self._prepare_injection(ctx, input_text, working_directory, config)
+            langbot_mcp_server = None
+            if config["enable_langbot_mcp"]:
+                bridge = self.create_external_mcp_bridge(ctx)
+                bridge.start()
+                langbot_mcp_server = bridge.mcp_server_config()
+            injection = self._prepare_injection(
+                ctx,
+                input_text,
+                working_directory,
+                config,
+                langbot_mcp_server,
+            )
         except Exception as e:
+            if bridge is not None:
+                bridge.stop()
             yield AgentRunResult.run_failed(
                 ctx.run_id,
                 error=f"Codex context injection failed: {e}",
@@ -665,7 +699,7 @@ class DefaultAgentRunner(AgentRunner):
             config,
             resume_session_id,
             output_last_message_path,
-            self._build_mcp_config_overrides(config),
+            self._build_mcp_config_overrides(injection.mcp_config_data),
         )
         stdin = self._build_stdin(input_text, injection)
 
@@ -700,6 +734,9 @@ class DefaultAgentRunner(AgentRunner):
                 code="codex.unexpected_error",
             )
             return
+        finally:
+            if bridge is not None:
+                bridge.stop()
 
         (run_dir / "codex-events.jsonl").write_text(stdout, encoding="utf-8")
         if stderr:

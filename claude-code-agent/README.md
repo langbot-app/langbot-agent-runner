@@ -21,6 +21,7 @@ message.
 | `working-directory` | empty | Directory used as Claude Code's project cwd. If empty, the runner reuses stored `external.working_directory` or falls back to its current process cwd. |
 | `inject-context` | `true` | Write LangBot run context files and prepend their paths to the current Claude Code prompt. |
 | `context-directory` | `.langbot/agent-runner` | Directory, relative to `working-directory` unless absolute, where per-run context and generated MCP config files are written. |
+| `enable-langbot-mcp` | `false` | Start the SDK-owned per-run LangBot MCP bridge and merge it into the generated Claude Code MCP config. |
 | `inject-skills` | `true` | Write configured skills into Claude Code's native `.claude/skills/<name>/SKILL.md` layout. |
 | `skills-json` | empty | Optional JSON array, or `{ "skills": [...] }`, with entries like `{ "name": "support-playbook", "content": "..." }`. |
 | `mcp-config-json` | empty | Optional Claude Code MCP config JSON object to write for this run and pass with `--mcp-config`. |
@@ -55,9 +56,15 @@ back with `--resume` and use the configured or stored working directory.
 LangBot still delivers the full Protocol v1 run context, including trigger,
 event, actor, subject, delivery, and state fields. This minimal runner currently
 passes that event/resource/state summary to Claude Code as read-only context
-files. LangBot-owned skills and MCP resources should be converted by Host or
-binding configuration into `skills-json` and `mcp-config-json`; this runner only
-adapts those scoped resources into Claude Code's native harness shape.
+files. LangBot-owned skills and external MCP resources can still be projected
+through `skills-json` and `mcp-config-json`.
+
+When `enable-langbot-mcp=true`, the runner calls the SDK base helper to create a
+per-run LangBot MCP bridge. That bridge exposes the SDK-owned annotated
+`AgentRunExternalTools` surface and delegates all LangBot asset access through
+`AgentRunAPIProxy`; this runner only merges the generated MCP server config into
+Claude Code's MCP config and adds the LangBot MCP tool pattern to
+`--allowedTools`.
 
 This plugin intentionally does not implement sandboxing, workspace mounting, or
 tool policy management. In real mode it requires a working local Claude Code CLI

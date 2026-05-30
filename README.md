@@ -34,6 +34,22 @@ LangBot does not inline full history by default. If a runner needs more context,
 it should use the authorized pull APIs, such as history, event, artifact, state,
 or storage APIs.
 
+## External Harness Access To LangBot Assets
+
+In-process runners, such as `local-agent`, should call `AgentRunAPIProxy`
+directly.
+
+Out-of-process harness runners, such as Claude Code and Codex, can optionally
+enable the SDK-owned LangBot MCP bridge. The bridge is created per run from the
+`AgentRunner` base class, exposes only the annotated `AgentRunExternalTools`
+surface, delegates all LangBot asset access back through `AgentRunAPIProxy`, and
+is stopped when the runner subprocess exits.
+
+This is not a global LangBot MCP server and runner plugins do not hand-maintain
+LangBot tool schemas. The SDK owns the annotations, schema generation, stdio MCP
+proxy, and MCP config merge helper; individual runners only decide whether to
+enable the bridge and how to pass the generated MCP config to their harness.
+
 ## Plugins
 
 | Plugin | Runner ID | Replaces | Description |
