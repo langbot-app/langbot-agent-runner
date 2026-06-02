@@ -141,6 +141,8 @@ uv run ruff check .
 ## Architecture
 
 - Each plugin is a root-level directory, not `packages/<plugin>`.
+- This repository is distributed as a plugin collection, not as an importable
+  `langbot_agent_runner` Python package.
 - Each plugin declares one or more AgentRunner components.
 - All runners use AgentRunner Protocol v1.
 - Host authorization is run-scoped and enforced through `run_id`,

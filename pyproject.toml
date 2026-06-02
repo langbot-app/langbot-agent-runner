@@ -27,6 +27,19 @@ target-version = "py310"
 select = ["E", "F", "W", "I", "UP", "B"]
 ignore = ["E501"]
 
+[tool.hatch.build.targets.wheel]
+only-include = [
+    "claude-code-agent",
+    "codex-agent",
+    "coze-agent",
+    "dashscope-agent",
+    "dify-agent",
+    "docs",
+    "langflow-agent",
+    "n8n-agent",
+    "tbox-agent",
+]
+
 [tool.uv.sources]
 langbot-plugin = { path = "../langbot-plugin-sdk", editable = true }
 

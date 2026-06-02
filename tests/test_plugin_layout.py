@@ -7,6 +7,11 @@ from pathlib import Path
 
 import yaml
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
+
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIRS = {
     "claude-code-agent",
@@ -67,6 +72,14 @@ def test_readme_lists_code_runner_ids() -> None:
     assert "`plugin:langbot/claude-code-agent/default`" in readme
     assert "`codex-agent`" in readme
     assert "`plugin:langbot/codex-agent/default`" in readme
+
+
+def test_repository_builds_as_plugin_collection_not_import_package() -> None:
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    wheel_target = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]
+
+    assert not (ROOT / "langbot_agent_runner").exists()
+    assert set(wheel_target["only-include"]) == PLUGIN_DIRS | {"docs"}
 
 
 def test_code_runners_request_history_for_langbot_mcp_bridge() -> None:
@@ -205,10 +218,12 @@ def _agent_run_context(*, text: str = "hello", config: dict | None = None):
         ),
         input=AgentInput(text=text),
         delivery=DeliveryContext(surface="pipeline"),
-        resources=AgentResources.model_validate({
-            "knowledge_bases": [{"kb_id": "kb_1"}],
-            "tools": [{"tool_name": "weather"}],
-        }),
+        resources=AgentResources.model_validate(
+            {
+                "knowledge_bases": [{"kb_id": "kb_1"}],
+                "tools": [{"tool_name": "weather"}],
+            }
+        ),
         context=ContextAccess(
             available_apis=ContextAPICapabilities(history_page=True),
         ),
@@ -247,7 +262,7 @@ class RecordingRunAPI:
 def _write_fake_mcp_harness(tmp_path: Path) -> Path:
     script = tmp_path / "fake_mcp_harness.py"
     script.write_text(
-        r'''
+        r"""
 from __future__ import annotations
 
 import json
@@ -347,7 +362,7 @@ if "--output-last-message" in sys.argv:
     print(json.dumps({"type": "thread.started", "thread_id": "thread_mcp_actions"}))
 else:
     print(json.dumps({"type": "result", "session_id": "sess_mcp_actions", "result": content}))
-''',
+""",
         encoding="utf-8",
     )
     return script
@@ -653,7 +668,9 @@ def test_claude_code_runner_injects_context_skills_and_mcp_config(monkeypatch, t
     assert context_payload["schema"] == "langbot.agent_runner.external_harness_context.v1"
     assert context_payload["event"]["event_type"] == "message.received"
     assert context_payload["input"]["text"] == "use langbot context"
-    assert module.json.loads(mcp_config.read_text(encoding="utf-8"))["mcpServers"]["langbot"]["command"] == "langbot-mcp"
+    assert (
+        module.json.loads(mcp_config.read_text(encoding="utf-8"))["mcpServers"]["langbot"]["command"] == "langbot-mcp"
+    )
     assert [result.type.value for result in results] == [
         "message.completed",
         "state.updated",
@@ -1105,7 +1122,9 @@ def test_codex_runner_injects_context_skills_and_mcp_config(monkeypatch, tmp_pat
     assert context_json.exists()
     assert context_markdown.exists()
     assert mcp_config.exists()
-    assert (run_dir / "codex-events.jsonl").read_text(encoding="utf-8") == '{"type":"thread.started","thread_id":"thread_new"}\n'
+    assert (run_dir / "codex-events.jsonl").read_text(
+        encoding="utf-8"
+    ) == '{"type":"thread.started","thread_id":"thread_new"}\n'
     assert skill_file.read_text(encoding="utf-8") == "# LangBot Support\nUse scoped resources only."
     assert skill_reference.read_text(encoding="utf-8") == "check resources"
 
@@ -1113,7 +1132,10 @@ def test_codex_runner_injects_context_skills_and_mcp_config(monkeypatch, tmp_pat
     assert context_payload["schema"] == "langbot.agent_runner.external_harness_context.v1"
     assert context_payload["event"]["event_type"] == "message.received"
     assert context_payload["input"]["text"] == "use langbot context"
-    assert module.json.loads(mcp_config.read_text(encoding="utf-8"))["mcpServers"]["langbot-agent"]["command"] == "langbot-mcp"
+    assert (
+        module.json.loads(mcp_config.read_text(encoding="utf-8"))["mcpServers"]["langbot-agent"]["command"]
+        == "langbot-mcp"
+    )
     assert [result.type.value for result in results] == [
         "message.completed",
         "state.updated",
