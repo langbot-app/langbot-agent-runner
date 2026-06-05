@@ -14,7 +14,8 @@ docs.
 Current Protocol v1 rules:
 
 - Use `ctx.input` for the current event input.
-- Use `ctx.bootstrap.messages` only as an optional bootstrap window.
+- Do not read `ctx.bootstrap`; Protocol v1 does not inline bootstrap/history
+  windows. Use authorized history pull APIs when more context is needed.
 - Use `ctx.adapter.extra["prompt"]` for Pipeline adapter prompt metadata when
   present.
 - Do not rely on top-level `ctx.messages`, `ctx.prompt`, or `ctx.params`.

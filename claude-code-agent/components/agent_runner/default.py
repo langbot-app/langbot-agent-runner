@@ -282,7 +282,6 @@ class DefaultAgentRunner(AgentRunner):
             "context": _dump_jsonable(ctx.context),
             "state": _dump_jsonable(ctx.state),
             "runtime": _dump_jsonable(ctx.runtime),
-            "bootstrap": _dump_jsonable(ctx.bootstrap),
             "adapter": _dump_jsonable(ctx.adapter),
             "metadata": _dump_jsonable(ctx.metadata),
         }

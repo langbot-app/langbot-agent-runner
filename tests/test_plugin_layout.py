@@ -395,7 +395,6 @@ def _expected_langbot_action_calls() -> list[tuple[str, dict]]:
             {
                 "tool_name": "weather",
                 "parameters": {"city": "Shanghai"},
-                "session": {},
             },
         ),
     ]
@@ -668,6 +667,7 @@ def test_claude_code_runner_injects_context_skills_and_mcp_config(monkeypatch, t
     assert context_payload["schema"] == "langbot.agent_runner.external_harness_context.v1"
     assert context_payload["event"]["event_type"] == "message.received"
     assert context_payload["input"]["text"] == "use langbot context"
+    assert "bootstrap" not in context_payload
     assert (
         module.json.loads(mcp_config.read_text(encoding="utf-8"))["mcpServers"]["langbot"]["command"] == "langbot-mcp"
     )
@@ -1132,6 +1132,7 @@ def test_codex_runner_injects_context_skills_and_mcp_config(monkeypatch, tmp_pat
     assert context_payload["schema"] == "langbot.agent_runner.external_harness_context.v1"
     assert context_payload["event"]["event_type"] == "message.received"
     assert context_payload["input"]["text"] == "use langbot context"
+    assert "bootstrap" not in context_payload
     assert (
         module.json.loads(mcp_config.read_text(encoding="utf-8"))["mcpServers"]["langbot-agent"]["command"]
         == "langbot-mcp"

@@ -15,8 +15,8 @@ Current Protocol v1 rules for this repository:
 - Do not depend on top-level `ctx.params`, `ctx.prompt`, or `ctx.messages`.
 - Read adapter params from `ctx.adapter.extra["params"]` when the host provides
   Pipeline adapter metadata.
-- Read bootstrap messages from `ctx.bootstrap.messages` only as an optional
-  small window.
+- Do not read `ctx.bootstrap`; Protocol v1 does not inline bootstrap/history
+  windows. Use authorized history pull APIs when more context is needed.
 - Use `ctx.input` for the current event input.
 - Include `ctx.run_id` in every `AgentRunResult` factory call.
 - Use explicit state scopes in `AgentRunResult.state_updated(...)`.

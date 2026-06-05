@@ -27,7 +27,6 @@ The plugins here consume the `AgentRunContext` delivered by LangBot:
 - `ctx.runtime`: deadline, trace id, query id from Pipeline adapter paths, and host
   runtime metadata.
 - `ctx.delivery`: current delivery surface and streaming/edit capabilities.
-- `ctx.bootstrap`: optional host bootstrap payload.
 - `ctx.adapter`: Pipeline adapter fields; not part of Protocol v1 core.
 
 LangBot does not inline full history by default. If a runner needs more context,
@@ -86,7 +85,8 @@ Pipeline adapter fields are adapter-only:
 
 - Business parameters may appear in `ctx.adapter.extra.params`.
 - Prompt data, if present, may appear in `ctx.adapter.extra.prompt`.
-- Bootstrap history may appear in `ctx.bootstrap.messages`.
+- History is not delivered through `ctx.bootstrap`; use authorized history pull
+  APIs when more context is needed.
 
 Do not depend on top-level `ctx.params`, `ctx.prompt`, or `ctx.messages` as the
 long-term Protocol v1 contract. New runner code should prefer event-first
