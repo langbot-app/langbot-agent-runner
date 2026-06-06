@@ -40,7 +40,7 @@ def _content_get(content: typing.Any, key: str, default: typing.Any = None) -> t
 
 def _content_type_from_base64(value: typing.Any, default: str) -> str:
     if isinstance(value, str) and value.startswith("data:") and ";base64," in value:
-        return value[5:value.find(";base64,")] or default
+        return value[5 : value.find(";base64,")] or default
     return default
 
 
@@ -66,20 +66,24 @@ def _attachments_from_contents(contents: list[typing.Any]) -> list[dict[str, typ
         item_type = _content_get(item, "type")
         if item_type == "image_base64":
             content = _content_get(item, "image_base64")
-            attachments.append({
-                "type": "image",
-                "name": "image.png",
-                "content": content,
-                "content_type": _content_type_from_base64(content, "image/jpeg"),
-            })
+            attachments.append(
+                {
+                    "type": "image",
+                    "name": "image.png",
+                    "content": content,
+                    "content_type": _content_type_from_base64(content, "image/jpeg"),
+                }
+            )
         elif item_type == "file_base64":
             content = _content_get(item, "file_base64")
-            attachments.append({
-                "type": "file",
-                "name": _content_get(item, "file_name") or "file",
-                "content": content,
-                "content_type": _content_type_from_base64(content, "application/octet-stream"),
-            })
+            attachments.append(
+                {
+                    "type": "file",
+                    "name": _content_get(item, "file_name") or "file",
+                    "content": content,
+                    "content_type": _content_type_from_base64(content, "application/octet-stream"),
+                }
+            )
     return attachments
 
 
@@ -132,8 +136,8 @@ class DefaultAgentRunner(AgentRunner):
     def _get_user_id(self, ctx: AgentRunContext) -> str:
         """Get user identifier for Tbox API."""
         actor = ctx.actor
-        if actor:
-            return f"{actor.type}_{actor.id}"
+        if actor and actor.actor_id:
+            return f"{actor.actor_type}_{actor.actor_id}"
         return f"user_{ctx.run_id}"
 
     def _get_external_conversation_id(self, ctx: AgentRunContext) -> str | None:
@@ -179,10 +183,12 @@ class DefaultAgentRunner(AgentRunner):
                 if content_type.startswith("image/"):
                     file_id = await client.upload_file(file_bytes, file_name)
                     if file_id:
-                        uploaded_files.append({
-                            "file_id": file_id,
-                            "type": "image",
-                        })
+                        uploaded_files.append(
+                            {
+                                "file_id": file_id,
+                                "type": "image",
+                            }
+                        )
             except Exception as e:
                 logger.warning(f"Failed to upload file {_attachment_get(attachment, 'name', 'file')}: {e}")
                 # Continue without this file rather than failing the entire request
@@ -208,7 +214,8 @@ class DefaultAgentRunner(AgentRunner):
         try:
             config = self._validate_config(ctx)
         except TboxConfigError as e:
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
@@ -234,14 +241,16 @@ class DefaultAgentRunner(AgentRunner):
             ):
                 yield result
         except TboxAPIError as e:
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
             return
         except Exception as e:
             logger.exception(f"Tbox runner unexpected error: {e}")
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=f"Tbox runner error: {e}",
                 code="tbox.unexpected_error",
             )
@@ -327,12 +336,13 @@ class DefaultAgentRunner(AgentRunner):
                 # Yield periodic updates (every 8 chunks)
                 if idx_msg > 0 and idx_msg % 8 == 0:
                     has_response = True
-                    yield AgentRunResult.message_delta(ctx.run_id,
+                    yield AgentRunResult.message_delta(
+                        ctx.run_id,
                         MessageChunk(
                             role="assistant",
                             content=pending_content,
                             is_final=False,
-                        )
+                        ),
                     )
 
             else:
@@ -360,23 +370,25 @@ class DefaultAgentRunner(AgentRunner):
                     result += content[0].get("chunk", "")
 
                 has_response = True
-                yield AgentRunResult.message_delta(ctx.run_id,
+                yield AgentRunResult.message_delta(
+                    ctx.run_id,
                     MessageChunk(
                         role="assistant",
                         content=result,
                         is_final=True,
-                    )
+                    ),
                 )
 
         # Handle remaining pending content for streaming
         if is_stream and pending_content:
             has_response = True
-            yield AgentRunResult.message_delta(ctx.run_id,
+            yield AgentRunResult.message_delta(
+                ctx.run_id,
                 MessageChunk(
                     role="assistant",
                     content=pending_content,
                     is_final=True,
-                )
+                ),
             )
 
         if not has_response:
@@ -387,7 +399,8 @@ class DefaultAgentRunner(AgentRunner):
 
         # Update state with conversation_id for next run (scoped state)
         if final_conversation_id:
-            yield AgentRunResult.state_updated(ctx.run_id,
+            yield AgentRunResult.state_updated(
+                ctx.run_id,
                 "external.conversation_id",
                 final_conversation_id,
                 scope="conversation",

@@ -103,8 +103,8 @@ class DefaultAgentRunner(AgentRunner):
     def _get_user_tag(self, ctx: AgentRunContext) -> str:
         """Get user identifier for n8n webhook."""
         actor = ctx.actor
-        if actor:
-            return f"{actor.type}_{actor.id}"
+        if actor and actor.actor_id:
+            return f"{actor.actor_type}_{actor.actor_id}"
         return f"user_{ctx.run_id}"
 
     def _get_conversation_id(self, ctx: AgentRunContext) -> str:
@@ -183,7 +183,8 @@ class DefaultAgentRunner(AgentRunner):
         try:
             config = self._validate_config(ctx)
         except N8nConfigError as e:
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
@@ -226,15 +227,13 @@ class DefaultAgentRunner(AgentRunner):
                     has_response = True
 
                     # Yield delta for each chunk
-                    yield AgentRunResult.message_delta(ctx.run_id,
-                        MessageChunk(role="assistant", content=full_content)
-                    )
+                    yield AgentRunResult.message_delta(ctx.run_id, MessageChunk(role="assistant", content=full_content))
 
                 elif event_type == "end":
                     # Streaming completed
                     if full_content:
-                        yield AgentRunResult.message_delta(ctx.run_id,
-                            MessageChunk(role="assistant", content=full_content, is_final=True)
+                        yield AgentRunResult.message_delta(
+                            ctx.run_id, MessageChunk(role="assistant", content=full_content, is_final=True)
                         )
 
                 elif event_type == "json":
@@ -242,26 +241,29 @@ class DefaultAgentRunner(AgentRunner):
                     output_content = event.get("content", "")
                     if output_content:
                         has_response = True
-                        yield AgentRunResult.message_delta(ctx.run_id,
-                            MessageChunk(role="assistant", content=output_content, is_final=True)
+                        yield AgentRunResult.message_delta(
+                            ctx.run_id, MessageChunk(role="assistant", content=output_content, is_final=True)
                         )
 
         except N8nAPIError as e:
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
             return
         except Exception as e:
             logger.exception(f"n8n runner unexpected error: {e}")
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=f"n8n runner error: {e}",
                 code="n8n.unexpected_error",
             )
             return
 
         if not has_response:
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error="n8n webhook returned no response",
                 code="n8n.empty_response",
             )
@@ -270,7 +272,8 @@ class DefaultAgentRunner(AgentRunner):
         # Store conversation_id in state for next run (scoped state)
         # Only update if we used a new conversation ID
         if conversation_id:
-            yield AgentRunResult.state_updated(ctx.run_id,
+            yield AgentRunResult.state_updated(
+                ctx.run_id,
                 "external.conversation_id",
                 conversation_id,
                 scope="conversation",

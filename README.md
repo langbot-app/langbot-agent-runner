@@ -18,16 +18,21 @@ Host or separate event-focused branches.
 The plugins here consume the `AgentRunContext` delivered by LangBot:
 
 - `ctx.event`: event-first trigger metadata.
+- `ctx.conversation`, `ctx.actor`, `ctx.subject`: current run scope metadata.
 - `ctx.input`: current user/event input, including multimodal contents and
   artifact/file references.
 - `ctx.context`: context access handles, cursors, inline policy, and available
   pull APIs.
 - `ctx.resources`: run-scoped authorized models, tools, knowledge bases, files,
   and storage capabilities.
-- `ctx.runtime`: deadline, trace id, query id from Pipeline adapter paths, and host
-  runtime metadata.
+- `ctx.state`: small Host-projected state for the current run.
+- `ctx.runtime`: deadline, trace id, protocol version, query id from migration
+  adapter paths, and host runtime metadata.
 - `ctx.delivery`: current delivery surface and streaming/edit capabilities.
-- `ctx.adapter`: Pipeline adapter fields; not part of Protocol v1 core.
+- `ctx.config`: runner binding config.
+- `ctx.adapter`: migration adapter fields; not part of Protocol v1 core and not
+  a place for prompt, history, RAG results, tool schemas, or authorized
+  resources.
 
 LangBot does not inline full history by default. If a runner needs more context,
 it should use the authorized pull APIs, such as history, event, artifact, state,
@@ -77,6 +82,7 @@ External-service runners usually map LangBot input to a remote platform call:
 - Read event and actor/subject metadata from `ctx.event`, `ctx.actor`, and
   `ctx.subject` when the target platform needs it.
 - Read delivery/runtime decisions from `ctx.delivery` and `ctx.runtime`.
+- Read static runner binding config from `ctx.config`.
 - Respect `ctx.resources` and use `AgentRunAPIProxy` for any Host-mediated
   model, tool, knowledge, history, event, artifact, state, or storage access.
 - Use `ctx.context` to decide whether more history/artifact/state can be pulled.
@@ -84,13 +90,16 @@ External-service runners usually map LangBot input to a remote platform call:
 Pipeline adapter fields are adapter-only:
 
 - Business parameters may appear in `ctx.adapter.extra.params`.
-- Prompt data, if present, may appear in `ctx.adapter.extra.prompt`.
+- Prompt data must not be read from `ctx.adapter.extra.prompt`.
+- Static binding prompt belongs to `ctx.config.prompt` when the runner has such
+  config. Effective prompt/instruction data, if needed, should be pulled through
+  the Host prompt API when `ctx.context.available_apis.prompt_get` is available.
 - History is not delivered through `ctx.bootstrap`; use authorized history pull
   APIs when more context is needed.
 
-Do not depend on top-level `ctx.params`, `ctx.prompt`, or `ctx.messages` as the
-long-term Protocol v1 contract. New runner code should prefer event-first
-fields and pull APIs.
+Do not depend on top-level `ctx.params`, `ctx.prompt`, `ctx.messages`, or
+`ctx.bootstrap` as Protocol v1 fields. New runner code should prefer
+event-first fields and pull APIs.
 
 Third-party agent platforms usually have their own prompt, app, bot, or workflow
 configuration. These runners should not reinterpret a LangBot prompt as the

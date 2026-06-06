@@ -40,7 +40,7 @@ def _content_get(content: typing.Any, key: str, default: typing.Any = None) -> t
 
 def _content_type_from_base64(value: typing.Any, default: str) -> str:
     if isinstance(value, str) and value.startswith("data:") and ";base64," in value:
-        return value[5:value.find(";base64,")] or default
+        return value[5 : value.find(";base64,")] or default
     return default
 
 
@@ -66,20 +66,24 @@ def _attachments_from_contents(contents: list[typing.Any]) -> list[dict[str, typ
         item_type = _content_get(item, "type")
         if item_type == "image_base64":
             content = _content_get(item, "image_base64")
-            attachments.append({
-                "type": "image",
-                "name": "image.png",
-                "content": content,
-                "content_type": _content_type_from_base64(content, "image/jpeg"),
-            })
+            attachments.append(
+                {
+                    "type": "image",
+                    "name": "image.png",
+                    "content": content,
+                    "content_type": _content_type_from_base64(content, "image/jpeg"),
+                }
+            )
         elif item_type == "file_base64":
             content = _content_get(item, "file_base64")
-            attachments.append({
-                "type": "file",
-                "name": _content_get(item, "file_name") or "file",
-                "content": content,
-                "content_type": _content_type_from_base64(content, "application/octet-stream"),
-            })
+            attachments.append(
+                {
+                    "type": "file",
+                    "name": _content_get(item, "file_name") or "file",
+                    "content": content,
+                    "content_type": _content_type_from_base64(content, "application/octet-stream"),
+                }
+            )
     return attachments
 
 
@@ -138,8 +142,8 @@ class DefaultAgentRunner(AgentRunner):
     def _get_user_id(self, ctx: AgentRunContext) -> str:
         """Get user identifier for Coze API."""
         actor = ctx.actor
-        if actor:
-            return f"{actor.type}_{actor.id}"
+        if actor and actor.actor_id:
+            return f"{actor.actor_type}_{actor.actor_id}"
         return f"user_{ctx.run_id}"
 
     def _get_external_conversation_id(self, ctx: AgentRunContext) -> str | None:
@@ -207,7 +211,9 @@ class DefaultAgentRunner(AgentRunner):
                 elif attachment_type == "image":
                     file_bytes = _decode_content(_attachment_get(attachment, "content"))
                     if file_bytes:
-                        file_id = await client.upload_file(file_bytes, _attachment_get(attachment, "name") or "image.png")
+                        file_id = await client.upload_file(
+                            file_bytes, _attachment_get(attachment, "name") or "image.png"
+                        )
                         content_parts.append({"type": "image", "file_id": file_id})
 
             except Exception as e:
@@ -251,7 +257,8 @@ class DefaultAgentRunner(AgentRunner):
         try:
             config = self._validate_config(ctx)
         except CozeConfigError as e:
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
@@ -273,7 +280,8 @@ class DefaultAgentRunner(AgentRunner):
             additional_messages = await self._build_additional_messages(ctx, client)
         except Exception as e:
             logger.exception(f"Failed to build Coze messages: {e}")
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=f"Failed to prepare input: {e}",
                 code="coze.input_error",
             )
@@ -317,7 +325,8 @@ class DefaultAgentRunner(AgentRunner):
 
                 elif event_type == "error":
                     error_msg = data.get("message", "Unknown Coze API error")
-                    yield AgentRunResult.run_failed(ctx.run_id,
+                    yield AgentRunResult.run_failed(
+                        ctx.run_id,
                         error=f"Coze API error: {error_msg}",
                         code="coze.api_error",
                     )
@@ -331,26 +340,29 @@ class DefaultAgentRunner(AgentRunner):
                 final_content = f"🤔\n{full_reasoning}\n💬\n{final_content}".strip()
 
             if not has_response:
-                yield AgentRunResult.run_failed(ctx.run_id,
+                yield AgentRunResult.run_failed(
+                    ctx.run_id,
                     error="Coze API returned no response",
                     code="coze.empty_response",
                 )
                 return
 
             # Yield final message
-            yield AgentRunResult.message_delta(ctx.run_id,
-                MessageChunk(role="assistant", content=final_content, is_final=True)
+            yield AgentRunResult.message_delta(
+                ctx.run_id, MessageChunk(role="assistant", content=final_content, is_final=True)
             )
 
         except CozeAPIError as e:
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
             return
         except Exception as e:
             logger.exception(f"Coze runner unexpected error: {e}")
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=f"Coze runner error: {e}",
                 code="coze.unexpected_error",
             )
@@ -360,7 +372,8 @@ class DefaultAgentRunner(AgentRunner):
 
         # Update state with conversation_id for next run (scoped state)
         if final_conversation_id:
-            yield AgentRunResult.state_updated(ctx.run_id,
+            yield AgentRunResult.state_updated(
+                ctx.run_id,
                 "external.conversation_id",
                 final_conversation_id,
                 scope="conversation",

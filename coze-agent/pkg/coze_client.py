@@ -5,7 +5,6 @@ This module provides a minimal Coze API client that doesn't depend on LangBot in
 
 from __future__ import annotations
 
-import asyncio
 import io
 import json
 import logging
@@ -150,7 +149,7 @@ class AsyncCozeClient:
                     file_id = result["data"]["id"]
                     return file_id
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise CozeAPIError(
                 "File upload timed out after 60s",
                 code="coze.timeout",
@@ -245,7 +244,7 @@ class AsyncCozeClient:
                         chunk_type = ""
                         chunk_data = ""
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise CozeAPIError(
                 f"Coze API request timed out after {self.timeout}s",
                 code="coze.timeout",
@@ -288,7 +287,9 @@ def process_thinking_content(content: str, remove_think: bool = False) -> tuple[
         think_pattern = r"<think>(.*?)</think>"
         think_matches = re.findall(think_pattern, content, re.DOTALL)
         if think_matches:
-            thinking_content = "\n".join(think_matches) if not thinking_content else thinking_content + "\n" + "\n".join(think_matches)
+            thinking_content = (
+                "\n".join(think_matches) if not thinking_content else thinking_content + "\n" + "\n".join(think_matches)
+            )
             content = re.sub(think_pattern, "", content, flags=re.DOTALL).strip()
 
     if remove_think:

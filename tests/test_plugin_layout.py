@@ -3,14 +3,10 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+import tomllib
 from pathlib import Path
 
 import yaml
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIRS = {
@@ -128,7 +124,7 @@ def test_multimodal_runners_decode_data_url_attachments_and_derive_from_contents
         ]
 
 
-def test_dify_runner_uses_protocol_v1_actor_fields_for_user_tag() -> None:
+def test_runners_use_protocol_v1_actor_fields_for_user_identity() -> None:
     from langbot_plugin.api.entities.builtin.agent_runner import (
         ActorContext,
         AgentEventContext,
@@ -140,15 +136,13 @@ def test_dify_runner_uses_protocol_v1_actor_fields_for_user_tag() -> None:
         DeliveryContext,
     )
 
-    module = _load_runner_module("dify-agent")
-    runner = object.__new__(module.DefaultAgentRunner)
     ctx = AgentRunContext(
         run_id="run_1",
         trigger=AgentTrigger(type="message.received"),
         event=AgentEventContext(
             event_id="evt_1",
             event_type="message.received",
-            source="pipeline_adapter",
+            source="host_adapter",
         ),
         input=AgentInput(text="hello"),
         delivery=DeliveryContext(surface="pipeline"),
@@ -157,7 +151,16 @@ def test_dify_runner_uses_protocol_v1_actor_fields_for_user_tag() -> None:
         actor=ActorContext(actor_type="user", actor_id="user_1"),
     )
 
-    assert runner._get_user_tag(ctx) == "user_user_1"
+    for plugin_dir, method_name in {
+        "coze-agent": "_get_user_id",
+        "dify-agent": "_get_user_tag",
+        "langflow-agent": "_get_user_tag",
+        "n8n-agent": "_get_user_tag",
+        "tbox-agent": "_get_user_id",
+    }.items():
+        module = _load_runner_module(plugin_dir)
+        runner = object.__new__(module.DefaultAgentRunner)
+        assert getattr(runner, method_name)(ctx) == "user_user_1"
 
 
 def test_non_streaming_capability_metadata_is_honored_when_supported() -> None:
@@ -180,7 +183,7 @@ def test_non_streaming_capability_metadata_is_honored_when_supported() -> None:
             event=AgentEventContext(
                 event_id="evt_1",
                 event_type="message.received",
-                source="pipeline_adapter",
+                source="host_adapter",
             ),
             input=AgentInput(text="hello"),
             delivery=DeliveryContext(surface="pipeline"),
@@ -214,7 +217,7 @@ def _agent_run_context(*, text: str = "hello", config: dict | None = None):
         event=AgentEventContext(
             event_id="evt_1",
             event_type="message.received",
-            source="pipeline_adapter",
+            source="host_adapter",
         ),
         input=AgentInput(text=text),
         delivery=DeliveryContext(surface="pipeline"),

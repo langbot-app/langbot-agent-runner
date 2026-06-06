@@ -3,6 +3,7 @@ kind: Plugin
 metadata:
   author: langbot
   name: claude-code-agent
+  version: 0.1.0
   label:
     en_US: Claude Code Agent
     zh_Hans: Claude Code Agent

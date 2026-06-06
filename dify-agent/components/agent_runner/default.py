@@ -51,7 +51,7 @@ def _content_get(content: typing.Any, key: str, default: typing.Any = None) -> t
 
 def _content_type_from_base64(value: typing.Any, default: str) -> str:
     if isinstance(value, str) and value.startswith("data:") and ";base64," in value:
-        return value[5:value.find(";base64,")] or default
+        return value[5 : value.find(";base64,")] or default
     return default
 
 
@@ -77,20 +77,24 @@ def _attachments_from_contents(contents: list[typing.Any]) -> list[dict[str, typ
         item_type = _content_get(item, "type")
         if item_type == "image_base64":
             content = _content_get(item, "image_base64")
-            attachments.append({
-                "type": "image",
-                "name": "image",
-                "content": content,
-                "content_type": _content_type_from_base64(content, "image/jpeg"),
-            })
+            attachments.append(
+                {
+                    "type": "image",
+                    "name": "image",
+                    "content": content,
+                    "content_type": _content_type_from_base64(content, "image/jpeg"),
+                }
+            )
         elif item_type == "file_base64":
             content = _content_get(item, "file_base64")
-            attachments.append({
-                "type": "file",
-                "name": _content_get(item, "file_name") or "file",
-                "content": content,
-                "content_type": _content_type_from_base64(content, "application/octet-stream"),
-            })
+            attachments.append(
+                {
+                    "type": "file",
+                    "name": _content_get(item, "file_name") or "file",
+                    "content": content,
+                    "content_type": _content_type_from_base64(content, "application/octet-stream"),
+                }
+            )
     return attachments
 
 
@@ -162,11 +166,8 @@ class DefaultAgentRunner(AgentRunner):
     def _get_user_tag(self, ctx: AgentRunContext) -> str:
         """Get user identifier for Dify API."""
         actor = ctx.actor
-        if actor:
-            actor_type = getattr(actor, "actor_type", None) or getattr(actor, "type", None)
-            actor_id = getattr(actor, "actor_id", None) or getattr(actor, "id", None)
-            if actor_type and actor_id:
-                return f"{actor_type}_{actor_id}"
+        if actor and actor.actor_id:
+            return f"{actor.actor_type}_{actor.actor_id}"
         return f"user_{ctx.run_id}"
 
     def _get_external_conversation_id(self, ctx: AgentRunContext) -> str:
@@ -235,11 +236,13 @@ class DefaultAgentRunner(AgentRunner):
                 file_id = result.get("id")
 
                 if file_id:
-                    uploaded_files.append({
-                        "type": file_type,
-                        "transfer_method": "local_file",
-                        "upload_file_id": file_id,
-                    })
+                    uploaded_files.append(
+                        {
+                            "type": file_type,
+                            "transfer_method": "local_file",
+                            "upload_file_id": file_id,
+                        }
+                    )
             except Exception as e:
                 logger.warning(f"Failed to upload file {_attachment_get(attachment, 'name', 'file')}: {e}")
                 # Continue without this file rather than failing the entire request
@@ -261,7 +264,8 @@ class DefaultAgentRunner(AgentRunner):
         try:
             config = self._validate_config(ctx)
         except DifyConfigError as e:
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
@@ -291,9 +295,7 @@ class DefaultAgentRunner(AgentRunner):
         try:
             if app_type == "workflow":
                 # Workflow mode - uses different endpoint
-                async for result in self._run_workflow(
-                    ctx, client, inputs, input_text, user, files, remove_think
-                ):
+                async for result in self._run_workflow(ctx, client, inputs, input_text, user, files, remove_think):
                     yield result
             else:
                 # Chat or Agent mode - uses chat-messages endpoint
@@ -302,14 +304,16 @@ class DefaultAgentRunner(AgentRunner):
                 ):
                     yield result
         except DifyAPIError as e:
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
             return
         except Exception as e:
             logger.exception(f"Dify runner unexpected error: {e}")
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=f"Dify runner error: {e}",
                 code="dify.unexpected_error",
             )
@@ -362,15 +366,11 @@ class DefaultAgentRunner(AgentRunner):
             # Handle different event types based on app_type and mode
             if mode == "workflow" and event_type == "node_finished":
                 if event.get("data", {}).get("node_type") == "answer":
-                    answer = extract_text_from_output(
-                        event.get("data", {}).get("outputs", {}).get("answer")
-                    )
+                    answer = extract_text_from_output(event.get("data", {}).get("outputs", {}).get("answer"))
                     content, _ = process_thinking_content(answer, remove_think)
                     if content:
                         has_response = True
-                        yield AgentRunResult.message_delta(ctx.run_id,
-                            MessageChunk(role="assistant", content=content)
-                        )
+                        yield AgentRunResult.message_delta(ctx.run_id, MessageChunk(role="assistant", content=content))
 
             elif event_type == "message" or event_type == "agent_message":
                 # Accumulate text chunks
@@ -382,8 +382,8 @@ class DefaultAgentRunner(AgentRunner):
                 if pending_content:
                     content, _ = process_thinking_content(pending_content, remove_think)
                     has_response = True
-                    yield AgentRunResult.message_delta(ctx.run_id,
-                        MessageChunk(role="assistant", content=content, is_final=True)
+                    yield AgentRunResult.message_delta(
+                        ctx.run_id, MessageChunk(role="assistant", content=content, is_final=True)
                     )
                 pending_content = ""
 
@@ -401,14 +401,13 @@ class DefaultAgentRunner(AgentRunner):
                     content, _ = process_thinking_content(pending_content, remove_think)
                     if content:
                         has_response = True
-                        yield AgentRunResult.message_delta(ctx.run_id,
-                            MessageChunk(role="assistant", content=content)
-                        )
+                        yield AgentRunResult.message_delta(ctx.run_id, MessageChunk(role="assistant", content=content))
                     pending_content = ""
 
                 # Report tool call as message_delta with tool_calls
                 if tool:
-                    yield AgentRunResult.message_delta(ctx.run_id,
+                    yield AgentRunResult.message_delta(
+                        ctx.run_id,
                         MessageChunk(
                             role="assistant",
                             content="",
@@ -422,7 +421,7 @@ class DefaultAgentRunner(AgentRunner):
                                     },
                                 }
                             ],
-                        )
+                        ),
                     )
 
             elif event_type == "message_file":
@@ -438,13 +437,12 @@ class DefaultAgentRunner(AgentRunner):
                             image_url = base_url + image_url
 
                         has_response = True
-                        yield AgentRunResult.message_delta(ctx.run_id,
+                        yield AgentRunResult.message_delta(
+                            ctx.run_id,
                             MessageChunk(
                                 role="assistant",
-                                content=[
-                                    {"type": "image_url", "image_url": {"url": image_url}}
-                                ],
-                            )
+                                content=[{"type": "image_url", "image_url": {"url": image_url}}],
+                            ),
                         )
 
             elif event_type == "workflow_finished":
@@ -458,8 +456,8 @@ class DefaultAgentRunner(AgentRunner):
             content, _ = process_thinking_content(pending_content, remove_think)
             if content:
                 has_response = True
-                yield AgentRunResult.message_delta(ctx.run_id,
-                    MessageChunk(role="assistant", content=content, is_final=True)
+                yield AgentRunResult.message_delta(
+                    ctx.run_id, MessageChunk(role="assistant", content=content, is_final=True)
                 )
 
         if not has_response:
@@ -470,7 +468,8 @@ class DefaultAgentRunner(AgentRunner):
 
         # Update state with conversation_id for next run (scoped state)
         if final_conversation_id:
-            yield AgentRunResult.state_updated(ctx.run_id,
+            yield AgentRunResult.state_updated(
+                ctx.run_id,
                 "external.conversation_id",
                 final_conversation_id,
                 scope="conversation",
@@ -550,7 +549,8 @@ class DefaultAgentRunner(AgentRunner):
                     continue
 
                 # Report node start as tool call indicator
-                yield AgentRunResult.message_delta(ctx.run_id,
+                yield AgentRunResult.message_delta(
+                    ctx.run_id,
                     MessageChunk(
                         role="assistant",
                         content="",
@@ -564,7 +564,7 @@ class DefaultAgentRunner(AgentRunner):
                                 },
                             }
                         ],
-                    )
+                    ),
                 )
 
             elif event_type == "text_chunk":
@@ -582,8 +582,8 @@ class DefaultAgentRunner(AgentRunner):
                 if summary:
                     content, _ = process_thinking_content(summary, remove_think)
                     has_response = True
-                    yield AgentRunResult.message_delta(ctx.run_id,
-                        MessageChunk(role="assistant", content=content, is_final=True)
+                    yield AgentRunResult.message_delta(
+                        ctx.run_id, MessageChunk(role="assistant", content=content, is_final=True)
                     )
 
         # Handle remaining pending content
@@ -591,8 +591,8 @@ class DefaultAgentRunner(AgentRunner):
             content, _ = process_thinking_content(pending_content, remove_think)
             if content:
                 has_response = True
-                yield AgentRunResult.message_delta(ctx.run_id,
-                    MessageChunk(role="assistant", content=content, is_final=True)
+                yield AgentRunResult.message_delta(
+                    ctx.run_id, MessageChunk(role="assistant", content=content, is_final=True)
                 )
 
         if not has_response:

@@ -3,7 +3,7 @@ name = "langbot-agent-runner"
 version = "0.1.0"
 description = "Official AgentRunner plugins for LangBot"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11,<4.0"
 license = { text = "MIT" }
 authors = [{ name = "LangBot Team" }]
 keywords = ["langbot", "agent", "runner", "plugin"]
@@ -21,7 +21,7 @@ dev = [
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]

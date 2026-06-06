@@ -145,7 +145,8 @@ class DefaultAgentRunner(AgentRunner):
             "extra_args": _parse_args(config.get("extra-args", "")),
             "working_directory": config.get("working-directory", ""),
             "inject_context": _to_bool(config.get("inject-context", True)),
-            "context_directory": config.get("context-directory", DEFAULT_CONTEXT_DIRECTORY) or DEFAULT_CONTEXT_DIRECTORY,
+            "context_directory": config.get("context-directory", DEFAULT_CONTEXT_DIRECTORY)
+            or DEFAULT_CONTEXT_DIRECTORY,
             "enable_langbot_mcp": enable_langbot_mcp,
             "inject_skills": _to_bool(config.get("inject-skills", True)),
             "skills_json": config.get("skills-json", ""),
@@ -164,8 +165,7 @@ class DefaultAgentRunner(AgentRunner):
             "verbose": _to_bool(config.get("verbose")),
             "resume": _to_bool(config.get("resume", True)),
             "timeout": float(config.get("timeout", 300) or 300),
-            "dry_run": _to_bool(config.get("dry-run"))
-            or any(_to_bool(os.getenv(name)) for name in DRY_RUN_ENV_NAMES),
+            "dry_run": _to_bool(config.get("dry-run")) or any(_to_bool(os.getenv(name)) for name in DRY_RUN_ENV_NAMES),
             "mock_response": config.get("mock-response", ""),
         }
 
@@ -224,13 +224,7 @@ class DefaultAgentRunner(AgentRunner):
         return [*command, *config["extra_args"]]
 
     def _get_input_text(self, ctx: AgentRunContext) -> str:
-        if ctx.input is None:
-            return ""
-        to_text = getattr(ctx.input, "to_text", None)
-        if callable(to_text):
-            return to_text()
-        text = getattr(ctx.input, "text", "")
-        return text or ""
+        return ctx.input.to_text()
 
     def _build_stdin(self, input_text: str, input_format: str, injection: PreparedInjection | None = None) -> bytes:
         if injection and injection.prompt_prefix:
@@ -253,7 +247,9 @@ class DefaultAgentRunner(AgentRunner):
         }
         return (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
 
-    def _run_context_directory(self, working_directory: str, ctx: AgentRunContext, config: dict[str, typing.Any]) -> pathlib.Path:
+    def _run_context_directory(
+        self, working_directory: str, ctx: AgentRunContext, config: dict[str, typing.Any]
+    ) -> pathlib.Path:
         base_dir = _resolve_under_workdir(working_directory, str(config["context_directory"]))
         return base_dir / _safe_name(ctx.run_id, "run")
 
@@ -274,8 +270,8 @@ class DefaultAgentRunner(AgentRunner):
             "subject": _dump_jsonable(ctx.subject),
             "input": {
                 "text": input_text,
-                "attachments": _dump_jsonable(getattr(ctx.input, "attachments", [])),
-                "contents": _dump_jsonable(getattr(ctx.input, "contents", [])),
+                "attachments": _dump_jsonable(ctx.input.attachments),
+                "contents": _dump_jsonable(ctx.input.contents),
             },
             "delivery": _dump_jsonable(ctx.delivery),
             "resources": _dump_jsonable(ctx.resources),
@@ -486,7 +482,7 @@ class DefaultAgentRunner(AgentRunner):
                 process.communicate(stdin),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             process.kill()
             await process.wait()
             raise
@@ -659,7 +655,7 @@ class DefaultAgentRunner(AgentRunner):
                 code="claude_code.command_not_found",
             )
             return
-        except asyncio.TimeoutError:
+        except TimeoutError:
             yield AgentRunResult.run_failed(
                 ctx.run_id,
                 error=f"Claude Code CLI timed out after {config['timeout']} seconds",

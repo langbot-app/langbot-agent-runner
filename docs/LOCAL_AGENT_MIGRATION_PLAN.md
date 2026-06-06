@@ -16,7 +16,7 @@ Current Protocol v1 rules:
 - Use `ctx.input` for the current event input.
 - Do not read `ctx.bootstrap`; Protocol v1 does not inline bootstrap/history
   windows. Use authorized history pull APIs when more context is needed.
-- Use `ctx.adapter.extra["prompt"]` for Pipeline adapter prompt metadata when
-  present.
+- Static runner prompt config may be read from `ctx.config["prompt"]`; effective
+  Host-composed prompt data should be pulled through the authorized prompt API.
 - Do not rely on top-level `ctx.messages`, `ctx.prompt`, or `ctx.params`.
 - Include `ctx.run_id` in every `AgentRunResult` factory call.
