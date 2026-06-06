@@ -43,12 +43,12 @@ def replace_references(text: str, references_dict: dict[str, str], references_qu
     Returns:
         Text with references replaced
     """
-    pattern = re.compile(r'<ref>\[(.*?)\]</ref>')
+    pattern = re.compile(r"<ref>\[(.*?)\]</ref>")
 
     def replacement(match):
         ref_key = match.group(1)
         if ref_key in references_dict:
-            return f'({references_quote} {references_dict[ref_key]})'
+            return f"({references_quote} {references_dict[ref_key]})"
         else:
             return match.group(0)
 
@@ -67,12 +67,12 @@ def extract_references_from_chunk(
         Dictionary mapping index_id to doc_name
     """
     references_dict: dict[str, str] = {}
-    references_list = stream_output.get('doc_references', [])
+    references_list = stream_output.get("doc_references", [])
 
     if references_list:
         for doc in references_list:
-            index_id = doc.get('index_id')
-            doc_name = doc.get('doc_name')
+            index_id = doc.get("index_id")
+            doc_name = doc.get("doc_name")
             if index_id is not None and doc_name is not None:
                 references_dict[index_id] = doc_name
 
@@ -154,7 +154,7 @@ class DashScopeClient:
             incremental_output=True,
             session_id=session_id,
             biz_params=biz_params,
-            flow_stream_mode='message_format',
+            flow_stream_mode="message_format",
         )
 
         yield from response

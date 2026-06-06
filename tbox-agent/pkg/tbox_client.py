@@ -54,6 +54,7 @@ class AsyncTboxClient:
         """Lazily initialize the sync TboxClient."""
         if self._sync_client is None:
             from tboxsdk.tbox import TboxClient
+
             self._sync_client = TboxClient(authorization=self.api_key)
         return self._sync_client
 

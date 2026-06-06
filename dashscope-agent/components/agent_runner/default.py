@@ -121,7 +121,8 @@ class DefaultAgentRunner(AgentRunner):
         try:
             config = self._validate_config(ctx)
         except DashScopeConfigError as e:
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
@@ -146,14 +147,16 @@ class DefaultAgentRunner(AgentRunner):
                 async for result in self._run_agent(ctx, client, input_text, session_id):
                     yield result
         except DashScopeAPIError as e:
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=e.message,
                 code=e.code,
             )
             return
         except Exception as e:
             logger.exception(f"DashScope runner unexpected error: {e}")
-            yield AgentRunResult.run_failed(ctx.run_id,
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
                 error=f"DashScope runner error: {e}",
                 code="dashscope.unexpected_error",
             )
@@ -188,7 +191,7 @@ class DefaultAgentRunner(AgentRunner):
             enable_thinking=enable_thinking,
         ):
             # Check for API errors
-            status_code = chunk.get('status_code')
+            status_code = chunk.get("status_code")
             if status_code != 200:
                 raise DashScopeAPIError(
                     f"DashScope API error: status_code={status_code} "
@@ -199,32 +202,32 @@ class DefaultAgentRunner(AgentRunner):
             if not chunk:
                 continue
 
-            stream_output = chunk.get('output', {})
+            stream_output = chunk.get("output", {})
 
             # Track session_id for stateful session
-            if stream_output.get('session_id'):
-                final_session_id = stream_output['session_id']
+            if stream_output.get("session_id"):
+                final_session_id = stream_output["session_id"]
 
             # Handle thinking/reasoning content
-            stream_think = stream_output.get('thoughts') or []
-            if stream_think and stream_think[0].get('thought'):
+            stream_think = stream_output.get("thoughts") or []
+            if stream_think and stream_think[0].get("thought"):
                 if not think_start:
                     think_start = True
-                    pending_content += f'{THINK_START}\n{stream_think[0].get("thought")}'
+                    pending_content += f"{THINK_START}\n{stream_think[0].get('thought')}"
                 else:
                     # Continue outputting reasoning_content
-                    pending_content += stream_think[0].get('thought')
-            elif think_start and (not stream_think or stream_think[0].get('thought') == '') and not think_end:
+                    pending_content += stream_think[0].get("thought")
+            elif think_start and (not stream_think or stream_think[0].get("thought") == "") and not think_end:
                 think_end = True
-                pending_content += f'\n{THINK_END}\n'
+                pending_content += f"\n{THINK_END}\n"
 
             # Handle text content
-            if stream_output.get('text') is not None:
-                pending_content += stream_output.get('text')
+            if stream_output.get("text") is not None:
+                pending_content += stream_output.get("text")
 
             # Check if this is the final chunk
-            finish_reason = stream_output.get('finish_reason')
-            is_final = finish_reason != 'null' if finish_reason else False
+            finish_reason = stream_output.get("finish_reason")
+            is_final = finish_reason != "null" if finish_reason else False
 
             # Extract and accumulate references
             chunk_refs = extract_references_from_chunk(stream_output)
@@ -240,19 +243,21 @@ class DefaultAgentRunner(AgentRunner):
 
             # Yield periodically or on final chunk
             if pending_content:
-                yield AgentRunResult.message_delta(ctx.run_id,
+                yield AgentRunResult.message_delta(
+                    ctx.run_id,
                     MessageChunk(
                         role="assistant",
                         content=pending_content,
                         is_final=is_final,
-                    )
+                    ),
                 )
                 if is_final:
                     pending_content = ""
 
         # Update state with session_id for next run
         if final_session_id:
-            yield AgentRunResult.state_updated(ctx.run_id,
+            yield AgentRunResult.state_updated(
+                ctx.run_id,
                 "external.conversation_id",
                 final_session_id,
                 scope="conversation",
@@ -285,7 +290,7 @@ class DefaultAgentRunner(AgentRunner):
             biz_params=biz_params,
         ):
             # Check for API errors
-            status_code = chunk.get('status_code')
+            status_code = chunk.get("status_code")
             if status_code != 200:
                 raise DashScopeAPIError(
                     f"DashScope API error: status_code={status_code} "
@@ -296,24 +301,24 @@ class DefaultAgentRunner(AgentRunner):
             if not chunk:
                 continue
 
-            stream_output = chunk.get('output', {})
+            stream_output = chunk.get("output", {})
 
             # Track session_id for stateful session
-            if stream_output.get('session_id'):
-                final_session_id = stream_output['session_id']
+            if stream_output.get("session_id"):
+                final_session_id = stream_output["session_id"]
 
             # Handle workflow message format output
-            workflow_message = stream_output.get('workflow_message')
+            workflow_message = stream_output.get("workflow_message")
             if workflow_message is not None:
-                message_content = workflow_message.get('message', {})
+                message_content = workflow_message.get("message", {})
                 if message_content:
-                    content = message_content.get('content', '')
+                    content = message_content.get("content", "")
                     if content:
                         pending_content += content
 
             # Check if this is the final chunk
-            finish_reason = stream_output.get('finish_reason')
-            is_final = finish_reason != 'null' if finish_reason else False
+            finish_reason = stream_output.get("finish_reason")
+            is_final = finish_reason != "null" if finish_reason else False
 
             # Extract and accumulate references
             chunk_refs = extract_references_from_chunk(stream_output)
@@ -329,19 +334,21 @@ class DefaultAgentRunner(AgentRunner):
 
             # Yield periodically or on final chunk
             if pending_content:
-                yield AgentRunResult.message_delta(ctx.run_id,
+                yield AgentRunResult.message_delta(
+                    ctx.run_id,
                     MessageChunk(
                         role="assistant",
                         content=pending_content,
                         is_final=is_final,
-                    )
+                    ),
                 )
                 if is_final:
                     pending_content = ""
 
         # Update state with session_id for next run
         if final_session_id:
-            yield AgentRunResult.state_updated(ctx.run_id,
+            yield AgentRunResult.state_updated(
+                ctx.run_id,
                 "external.conversation_id",
                 final_session_id,
                 scope="conversation",
