@@ -60,8 +60,16 @@ grant it for that run.
 ## Remote Agent Daemon
 
 Code-harness runners can share the dependency-free `remote_agent_daemon`
-package for remote execution. Start it on the remote machine and select an
-adapter with `--agent`, for example:
+package for remote execution. Install this repository on the remote machine;
+do not copy daemon source files by hand:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install "git+https://github.com/langbot-app/langbot-agent-runner.git@main"
+```
+
+Then start the daemon and select an adapter with `--agent`, for example:
 
 ```bash
 python -m remote_agent_daemon \

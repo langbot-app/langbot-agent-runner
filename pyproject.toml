@@ -37,6 +37,7 @@ only-include = [
     "docs",
     "langflow-agent",
     "n8n-agent",
+    "remote_agent_daemon",
     "tbox-agent",
 ]
 
