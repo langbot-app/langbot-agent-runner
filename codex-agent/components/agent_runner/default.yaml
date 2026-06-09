@@ -11,20 +11,44 @@ metadata:
 spec:
   protocol_version: "1"
   config:
-    - name: cli-command
+    - name: execution-mode
       label:
-        en_US: CLI Command
-        zh_Hans: CLI 命令
-      type: string
+        en_US: Execution Mode
+        zh_Hans: 执行模式
+      type: select
       required: false
-      default: codex
-    - name: extra-args
+      default: local
+      options:
+        - name: local
+          label:
+            en_US: Local
+            zh_Hans: 本机
+        - name: remote
+          label:
+            en_US: Remote Daemon
+            zh_Hans: 远端 Daemon
+    - name: remote-endpoint
       label:
-        en_US: Extra Args
-        zh_Hans: 额外参数
+        en_US: Remote Endpoint
+        zh_Hans: 远端地址
       type: string
       required: false
       default: ''
+      show_if:
+        field: execution-mode
+        operator: eq
+        value: remote
+    - name: remote-token
+      label:
+        en_US: Remote Token
+        zh_Hans: 远端 Token
+      type: password
+      required: false
+      default: ''
+      show_if:
+        field: execution-mode
+        operator: eq
+        value: remote
     - name: working-directory
       label:
         en_US: Working Directory
@@ -32,55 +56,10 @@ spec:
       type: string
       required: false
       default: ''
-    - name: inject-context
-      label:
-        en_US: Inject Context
-        zh_Hans: 注入上下文
-      type: boolean
-      required: false
-      default: true
-    - name: context-directory
-      label:
-        en_US: Context Directory
-        zh_Hans: 上下文目录
-      type: string
-      required: false
-      default: .langbot/agent-runner
-    - name: enable-langbot-mcp
-      label:
-        en_US: Enable LangBot MCP Tools
-        zh_Hans: 启用 LangBot MCP 工具
-      type: boolean
-      required: false
-      default: false
-    - name: inject-skills
-      label:
-        en_US: Inject Skills
-        zh_Hans: 注入 Skills
-      type: boolean
-      required: false
-      default: true
-    - name: skills-json
-      label:
-        en_US: Skills JSON
-        zh_Hans: Skills JSON
-      type: string
-      required: false
-      default: ''
-    - name: mcp-config-json
-      label:
-        en_US: MCP Config JSON
-        zh_Hans: MCP 配置 JSON
-      type: string
-      required: false
-      default: ''
-    - name: mcp-config-file
-      label:
-        en_US: MCP Config File
-        zh_Hans: MCP 配置文件
-      type: string
-      required: false
-      default: ''
+      show_if:
+        field: execution-mode
+        operator: eq
+        value: local
     - name: model
       label:
         en_US: Model
@@ -88,111 +67,6 @@ spec:
       type: string
       required: false
       default: ''
-    - name: profile
-      label:
-        en_US: Profile
-        zh_Hans: 配置 Profile
-      type: string
-      required: false
-      default: ''
-    - name: approval-policy
-      label:
-        en_US: Approval Policy
-        zh_Hans: 批准策略
-      type: select
-      required: false
-      default: never
-      options:
-        - name: never
-          label:
-            en_US: Never Prompt
-            zh_Hans: 从不请求
-        - name: on-request
-          label:
-            en_US: On Request
-            zh_Hans: 按需请求
-        - name: on-failure
-          label:
-            en_US: On Failure
-            zh_Hans: 失败时请求
-    - name: sandbox
-      label:
-        en_US: Sandbox
-        zh_Hans: 沙箱
-      type: select
-      required: false
-      default: read-only
-      options:
-        - name: read-only
-          label:
-            en_US: Read Only
-            zh_Hans: 只读
-        - name: workspace-write
-          label:
-            en_US: Workspace Write
-            zh_Hans: 工作区写入
-        - name: danger-full-access
-          label:
-            en_US: Danger Full Access
-            zh_Hans: 完全访问
-    - name: output-format
-      label:
-        en_US: Output Format
-        zh_Hans: 输出格式
-      type: select
-      required: false
-      default: json
-      options:
-        - name: json
-          label:
-            en_US: JSONL Events
-            zh_Hans: JSONL 事件
-        - name: text
-          label:
-            en_US: Text
-            zh_Hans: 文本
-    - name: skip-git-repo-check
-      label:
-        en_US: Skip Git Repo Check
-        zh_Hans: 跳过 Git 仓库检查
-      type: boolean
-      required: false
-      default: true
-    - name: ephemeral
-      label:
-        en_US: Ephemeral
-        zh_Hans: 临时会话
-      type: boolean
-      required: false
-      default: false
-    - name: ignore-rules
-      label:
-        en_US: Ignore Rules
-        zh_Hans: 忽略规则
-      type: boolean
-      required: false
-      default: false
-    - name: config-overrides
-      label:
-        en_US: Config Overrides
-        zh_Hans: 配置覆盖
-      type: string
-      required: false
-      default: ''
-    - name: environment-json
-      label:
-        en_US: Environment JSON
-        zh_Hans: 环境变量 JSON
-      type: string
-      required: false
-      default: ''
-    - name: resume
-      label:
-        en_US: Resume Session
-        zh_Hans: 恢复会话
-      type: boolean
-      required: false
-      default: true
     - name: timeout
       label:
         en_US: Timeout
@@ -200,20 +74,6 @@ spec:
       type: integer
       required: false
       default: 300
-    - name: dry-run
-      label:
-        en_US: Dry Run
-        zh_Hans: Dry Run
-      type: boolean
-      required: false
-      default: false
-    - name: mock-response
-      label:
-        en_US: Mock Response
-        zh_Hans: 模拟响应
-      type: string
-      required: false
-      default: ''
   capabilities:
     streaming: false
     tool_calling: true

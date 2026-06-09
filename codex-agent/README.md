@@ -1,6 +1,6 @@
 # Codex Agent
 
-Minimal LangBot AgentRunner plugin for the local Codex CLI.
+Minimal LangBot AgentRunner plugin for the Codex CLI.
 
 Runner ID:
 
@@ -14,58 +14,97 @@ assistant message.
 
 ## Configuration
 
+The pipeline binding form intentionally exposes only product-level settings:
+
 | Field | Default | Description |
 | --- | --- | --- |
-| `cli-command` | `codex` | CLI command to execute. Use `codex` unless a wrapper command is required. |
-| `extra-args` | empty | Extra CLI arguments appended after runner-owned options and before the prompt marker. |
+| `execution-mode` | `local` | `local` runs Codex on the LangBot runtime host. `remote` sends the run to a remote daemon. |
+| `remote-endpoint` | empty | Remote daemon base URL, for example `http://127.0.0.1:8766`. Required when `execution-mode=remote`. |
+| `remote-token` | empty | Optional bearer token sent to the remote daemon. |
 | `working-directory` | empty | Directory used as Codex's project cwd. If empty, the runner reuses stored `external.working_directory` or falls back to its current process cwd. |
-| `inject-context` | `true` | Write LangBot run context files and prepend their paths to the Codex prompt. |
-| `context-directory` | `.langbot/agent-runner` | Directory, relative to `working-directory` unless absolute, where per-run context files are written. |
-| `enable-langbot-mcp` | `false` | Start the SDK-owned per-run LangBot MCP bridge and merge it into the generated Codex MCP config overrides. |
-| `inject-skills` | `true` | Write configured skills into the per-run `codex-skills/<name>/SKILL.md` directory and mention the directory in the prompt. |
-| `skills-json` | empty | Optional JSON array, or `{ "skills": [...] }`, with entries like `{ "name": "support-playbook", "content": "..." }`. |
-| `mcp-config-json` | empty | Optional MCP config JSON. The runner writes it to the run directory and best-effort maps `mcpServers` to Codex `--config mcp_servers.*` overrides. |
-| `mcp-config-file` | empty | Existing MCP config file path to reference in the prompt; relative paths resolve from `working-directory`. |
 | `model` | empty | Optional Codex `--model` argument. |
-| `profile` | empty | Optional Codex `--profile` argument for new sessions. |
-| `approval-policy` | `never` | Codex approval policy passed as `approval_policy`. The default keeps non-interactive LangBot-triggered tool calls from being cancelled while LangBot still owns runner resource authorization. |
-| `sandbox` | `read-only` | Codex sandbox mode for new sessions. |
-| `output-format` | `json` | `json` uses Codex JSONL events and captures `thread_id`; `text` parses plain stdout or the last-message file. |
-| `skip-git-repo-check` | `true` | Add `--skip-git-repo-check`, useful for LangBot workspaces that are not a single Git repository. |
-| `ephemeral` | `false` | Add `--ephemeral`. |
-| `ignore-rules` | `false` | Add `--ignore-rules`. |
-| `config-overrides` | empty | JSON object/list or shell string of Codex `--config key=value` overrides. |
-| `environment-json` | empty | Optional JSON object of environment variables for the Codex subprocess. Use this for runtime-local settings such as proxy variables; do not store secrets here. |
-| `resume` | `true` | Use `codex exec resume <thread_id>` when a prior thread id exists in runner state. |
 | `timeout` | `300` | Process timeout in seconds. |
-| `dry-run` | `false` | Return a mock response without invoking the CLI. |
-| `mock-response` | empty | Optional dry-run response body. |
 
-Dry-run mode can also be enabled with `LANGBOT_CODEX_AGENT_DRY_RUN=1` or
-`CODEX_AGENT_DRY_RUN=1`.
+Code-level tests and wrappers may still pass a few runner-owned compatibility
+keys, including `cli-command`, `extra-args`, `inject-context`,
+`context-directory`, `approval-policy`, `sandbox`, `output-format`,
+`skip-git-repo-check`, `ephemeral`, `ignore-rules`, `config-overrides`,
+`environment-json`, and `resume`. The pipeline form intentionally does not ask
+users to write Codex profiles, MCP JSON, skills JSON, dry-run settings, or mock
+responses. The local subprocess starts from a small allowlisted environment
+surface for CLI auth, proxy, locale, and certificate settings. `environment-json`
+can add runtime-local non-secret settings such as proxies, but it cannot
+override protected variables such as `HOME`, `PATH`, `CODEX_HOME`, `PYTHONPATH`,
+or `LANGBOT_*`.
+
+## Remote Daemon MVP
+
+The first remote execution path is intentionally narrow:
+
+- The runner sends one HTTP JSON request to the daemon and waits for completion.
+- The daemon materializes runner-projected context files under a daemon-owned
+  workspace directory.
+- The daemon executes Codex locally and returns stdout/stderr/returncode.
+
+Start the shared daemon on the remote machine:
+
+```bash
+python -m remote_agent_daemon \
+  --agent codex \
+  --host 0.0.0.0 \
+  --port 8766 \
+  --base-dir /path/to/langbot-remote-workspaces \
+  --command-path /home/codex-user/.npm-global/bin \
+  --token "$LANGBOT_REMOTE_AGENT_TOKEN"
+```
+
+The legacy `cd codex-agent && python -m pkg.remote_daemon ...` entry point is
+still available and forces the Codex adapter.
+
+Then configure the runner binding with:
+
+```text
+execution-mode=remote
+remote-endpoint=http://<daemon-host>:8766
+remote-token=<same token, if configured>
+```
+
+In remote mode, `cli-command` is resolved on the daemon host, not on the LangBot
+runtime host. Start the daemon with
+`--command-path` / `LANGBOT_REMOTE_AGENT_COMMAND_PATH` when `codex` only exists
+in a user-local bin directory that a service shell would not normally load.
+
+Remote mode stores `external.session_id`, `external.runtime_id`, and
+`external.workspace_key` in Host state. It does not persist the daemon's absolute
+working directory as resume state, because that path is only meaningful on the
+daemon machine.
 
 ## Notes
 
 The plugin itself is stateless. When Codex emits a `thread_id`, the runner asks
 LangBot to store it in conversation-scoped runner state under
-`external.session_id`; it also stores `external.working_directory` because Codex
-resume lookup is project/cwd scoped. Later runs use `codex exec resume` with the
-stored thread id.
+`external.session_id`; it also stores `external.working_directory` in local mode
+because Codex resume lookup is project/cwd scoped. Later local runs use
+`codex exec resume` with the stored thread id.
 
 LangBot still delivers the full Protocol v1 run context, including trigger,
-event, actor, subject, delivery, and state fields. This minimal runner passes
-that event/resource/state summary to Codex as read-only context files. LangBot
-owned skills and external MCP resources can still be projected through
-`skills-json`, `mcp-config-json`, or Codex config overrides.
+event, actor, subject, delivery, and state fields. This runner passes that
+event/resource/state summary to Codex as read-only context files.
 
-When `enable-langbot-mcp=true`, the runner calls the SDK base helper to create a
-per-run LangBot MCP bridge. That bridge exposes only the tools authorized for
-the current run from the SDK-owned annotated `AgentRunExternalTools` surface and
-delegates all LangBot asset access through `AgentRunAPIProxy`; this runner only
-merges the generated MCP server config into Codex `--config mcp_servers.*`
-overrides. LangBot bridge tools are marked with Codex `approval_mode="approve"`
-so non-interactive runs can actually call the run-scoped bridge; LangBot still
-performs the resource authorization.
+In local mode, the runner automatically creates a per-run LangBot MCP bridge
+when the LangBot runtime is bound. That bridge exposes only the tools and
+knowledge access authorized for the current run from the SDK-owned
+`AgentRunExternalTools` surface and delegates all LangBot asset access through
+`AgentRunAPIProxy`. The runner writes the generated MCP config into a per-run
+`CODEX_HOME/config.toml` with `0600` permissions, and filters user
+`config-overrides` that try to write `mcp_servers.*`. The per-run `CODEX_HOME`
+inherits local Codex auth/session and non-MCP provider config from the runtime
+user's shared Codex home, but strips global `mcp_servers` before appending the
+LangBot-managed bridge. This keeps scoped MCP secrets out of Codex argv and
+ordinary command logs without breaking the operator's existing Codex login.
+LangBot bridge tools are marked with Codex `approval_mode="approve"` so
+non-interactive runs can call the run-scoped bridge while LangBot still performs
+resource authorization.
 
 The runner writes Codex JSONL stdout to `codex-events.jsonl` in the run
 directory, and writes non-empty stderr to `codex-stderr.log`. These files are
@@ -74,4 +113,5 @@ data.
 
 This plugin intentionally does not implement full workspace lifecycle,
 publishing-grade sandboxing, or tool policy management. In real mode it requires
-a working local Codex CLI on the LangBot runtime host.
+a working Codex CLI on the LangBot runtime host, or on the configured remote
+daemon host when `execution-mode=remote`.

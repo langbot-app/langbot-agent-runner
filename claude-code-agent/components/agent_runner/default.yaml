@@ -11,20 +11,44 @@ metadata:
 spec:
   protocol_version: "1"
   config:
-    - name: cli-command
+    - name: execution-mode
       label:
-        en_US: CLI Command
-        zh_Hans: CLI 命令
-      type: string
+        en_US: Execution Mode
+        zh_Hans: 执行模式
+      type: select
       required: false
-      default: claude
-    - name: extra-args
+      default: local
+      options:
+        - name: local
+          label:
+            en_US: Local
+            zh_Hans: 本机
+        - name: remote
+          label:
+            en_US: Remote Daemon
+            zh_Hans: 远端 Daemon
+    - name: remote-endpoint
       label:
-        en_US: Extra Args
-        zh_Hans: 额外参数
+        en_US: Remote Endpoint
+        zh_Hans: 远端地址
       type: string
       required: false
       default: ''
+      show_if:
+        field: execution-mode
+        operator: eq
+        value: remote
+    - name: remote-token
+      label:
+        en_US: Remote Token
+        zh_Hans: 远端 Token
+      type: password
+      required: false
+      default: ''
+      show_if:
+        field: execution-mode
+        operator: eq
+        value: remote
     - name: working-directory
       label:
         en_US: Working Directory
@@ -32,62 +56,10 @@ spec:
       type: string
       required: false
       default: ''
-    - name: inject-context
-      label:
-        en_US: Inject Context
-        zh_Hans: 注入上下文
-      type: boolean
-      required: false
-      default: true
-    - name: context-directory
-      label:
-        en_US: Context Directory
-        zh_Hans: 上下文目录
-      type: string
-      required: false
-      default: .langbot/agent-runner
-    - name: enable-langbot-mcp
-      label:
-        en_US: Enable LangBot MCP Tools
-        zh_Hans: 启用 LangBot MCP 工具
-      type: boolean
-      required: false
-      default: false
-    - name: inject-skills
-      label:
-        en_US: Inject Skills
-        zh_Hans: 注入 Skills
-      type: boolean
-      required: false
-      default: true
-    - name: skills-json
-      label:
-        en_US: Skills JSON
-        zh_Hans: Skills JSON
-      type: string
-      required: false
-      default: ''
-    - name: mcp-config-json
-      label:
-        en_US: MCP Config JSON
-        zh_Hans: MCP 配置 JSON
-      type: string
-      required: false
-      default: ''
-    - name: mcp-config-file
-      label:
-        en_US: MCP Config File
-        zh_Hans: MCP 配置文件
-      type: string
-      required: false
-      default: ''
-    - name: strict-mcp-config
-      label:
-        en_US: Strict MCP Config
-        zh_Hans: 严格 MCP 配置
-      type: boolean
-      required: false
-      default: true
+      show_if:
+        field: execution-mode
+        operator: eq
+        value: local
     - name: model
       label:
         en_US: Model
@@ -95,98 +67,13 @@ spec:
       type: string
       required: false
       default: ''
-    - name: output-format
+    - name: dangerously-skip-permissions
       label:
-        en_US: Output Format
-        zh_Hans: 输出格式
-      type: select
-      required: false
-      default: json
-      options:
-        - name: json
-          label:
-            en_US: JSON
-            zh_Hans: JSON
-        - name: stream-json
-          label:
-            en_US: Stream JSON
-            zh_Hans: Stream JSON
-        - name: text
-          label:
-            en_US: Text
-            zh_Hans: 文本
-    - name: input-format
-      label:
-        en_US: Input Format
-        zh_Hans: 输入格式
-      type: select
-      required: false
-      default: text
-      options:
-        - name: text
-          label:
-            en_US: Text
-            zh_Hans: 文本
-        - name: stream-json
-          label:
-            en_US: Stream JSON
-            zh_Hans: Stream JSON
-    - name: setting-sources
-      label:
-        en_US: Setting Sources
-        zh_Hans: 设置来源
-      type: string
-      required: false
-      default: ''
-    - name: permission-mode
-      label:
-        en_US: Permission Mode
-        zh_Hans: 权限模式
-      type: string
-      required: false
-      default: plan
-    - name: tools
-      label:
-        en_US: Tools
-        zh_Hans: 工具
-      type: string
-      required: false
-      default: ''
-    - name: allowed-tools
-      label:
-        en_US: Allowed Tools
-        zh_Hans: 允许工具
-      type: string
-      required: false
-      default: ''
-    - name: disallowed-tools
-      label:
-        en_US: Disallowed Tools
-        zh_Hans: 禁用工具
-      type: string
-      required: false
-      default: AskUserQuestion
-    - name: max-turns
-      label:
-        en_US: Max Turns
-        zh_Hans: 最大轮数
-      type: integer
-      required: false
-      default: 1
-    - name: verbose
-      label:
-        en_US: Verbose
-        zh_Hans: 详细输出
+        en_US: Autonomous Permission Bypass
+        zh_Hans: 自主执行权限绕过
       type: boolean
       required: false
       default: false
-    - name: resume
-      label:
-        en_US: Resume Session
-        zh_Hans: 恢复会话
-      type: boolean
-      required: false
-      default: true
     - name: timeout
       label:
         en_US: Timeout
@@ -194,20 +81,6 @@ spec:
       type: integer
       required: false
       default: 300
-    - name: dry-run
-      label:
-        en_US: Dry Run
-        zh_Hans: Dry Run
-      type: boolean
-      required: false
-      default: false
-    - name: mock-response
-      label:
-        en_US: Mock Response
-        zh_Hans: 模拟响应
-      type: string
-      required: false
-      default: ''
   capabilities:
     streaming: false
     tool_calling: true

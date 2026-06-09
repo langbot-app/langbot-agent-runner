@@ -57,6 +57,27 @@ If a harness expects a bridge tool such as `langbot_history_page`, the runner
 manifest must request the matching AgentRunner permission and LangBot Host must
 grant it for that run.
 
+## Remote Agent Daemon
+
+Code-harness runners can share the dependency-free `remote_agent_daemon`
+package for remote execution. Start it on the remote machine and select an
+adapter with `--agent`, for example:
+
+```bash
+python -m remote_agent_daemon \
+  --agent codex \
+  --host 0.0.0.0 \
+  --port 8766 \
+  --base-dir /path/to/langbot-remote-workspaces \
+  --command-path /home/agent-user/.local/bin \
+  --token "$LANGBOT_REMOTE_AGENT_TOKEN"
+```
+
+The daemon owns HTTP auth, workspace materialization, subprocess execution, and
+result transport. Agent-specific behavior lives in small command adapters such
+as `claude-code` and `codex`; future harnesses such as pi or kimi should add an
+adapter instead of copying the daemon.
+
 ## Plugins
 
 | Plugin | Runner ID | Replaces | Description |
