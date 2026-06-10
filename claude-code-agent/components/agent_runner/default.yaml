@@ -85,18 +85,15 @@ spec:
     tool_calling: true
     knowledge_retrieval: true
     multimodal_input: false
-    event_context: true
-    platform_api: false
     interrupt: false
-    stateful_session: true
   permissions:
-    models: []
-    tools: ["detail", "call"]
-    knowledge_bases: ["list", "retrieve"]
-    history: ["page"]
-    storage: []
-    files: []
-    platform_api: []
+    tools:
+      - detail
+      - call
+    knowledge_bases:
+      - retrieve
+    history:
+      - page
 execution:
   python:
     path: default.py

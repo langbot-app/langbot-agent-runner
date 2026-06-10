@@ -11,7 +11,6 @@ import typing
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
-    AgentRunnerCapabilities,
     AgentRunResult,
     AgentRunResultType,
 )
@@ -27,14 +26,6 @@ _post_remote_run = remote_client.post_remote_run
 
 class DefaultAgentRunner(AgentRunner):
     """Minimal AgentRunner for the local Codex CLI."""
-
-    @classmethod
-    def get_capabilities(cls) -> AgentRunnerCapabilities:
-        """Get runner capabilities."""
-        return AgentRunnerCapabilities(
-            streaming=False,
-            stateful_session=True,
-        )
 
     def _get_config(self, ctx: AgentRunContext) -> dict[str, typing.Any]:
         config = ctx.config or {}

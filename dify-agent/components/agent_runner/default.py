@@ -14,7 +14,6 @@ import uuid
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
-    AgentRunnerCapabilities,
     AgentRunResult,
 )
 from langbot_plugin.api.entities.builtin.provider.message import MessageChunk
@@ -121,15 +120,6 @@ class DefaultAgentRunner(AgentRunner):
     - Workflow inputs passed to Dify workflow endpoint
     - Custom variables passed to Dify chat-messages inputs
     """
-
-    @classmethod
-    def get_capabilities(cls) -> AgentRunnerCapabilities:
-        """Get runner capabilities."""
-        return AgentRunnerCapabilities(
-            streaming=True,
-            multimodal_input=True,
-            stateful_session=True,
-        )
 
     def _validate_config(self, ctx: AgentRunContext) -> dict[str, typing.Any]:
         """Validate and return static configuration.

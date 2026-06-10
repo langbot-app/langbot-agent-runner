@@ -153,10 +153,22 @@ def test_repository_builds_as_plugin_collection_not_import_package() -> None:
     assert set(wheel_target["only-include"]) == PLUGIN_DIRS | {"docs", "remote_agent_daemon"}
 
 
-def test_code_runners_request_history_for_langbot_mcp_bridge() -> None:
+def test_code_runners_declare_bridge_related_capabilities() -> None:
     for plugin_dir in {"claude-code-agent", "codex-agent"}:
         runner = _load_yaml(ROOT / plugin_dir / "components" / "agent_runner" / "default.yaml")
-        assert "page" in runner["spec"]["permissions"].get("history", [])
+        assert runner["spec"]["permissions"] == {
+            "tools": ["detail", "call"],
+            "knowledge_bases": ["retrieve"],
+            "history": ["page"],
+        }
+        assert runner["spec"]["capabilities"]["tool_calling"] is True
+        assert runner["spec"]["capabilities"]["knowledge_retrieval"] is True
+
+
+def test_external_service_runners_declare_minimal_plugin_storage_permission() -> None:
+    for plugin_dir in PLUGIN_DIRS - {"claude-code-agent", "codex-agent"}:
+        runner = _load_yaml(ROOT / plugin_dir / "components" / "agent_runner" / "default.yaml")
+        assert runner["spec"]["permissions"] == {"storage": ["plugin"]}
 
 
 def test_runner_sources_do_not_read_capabilities_from_context() -> None:

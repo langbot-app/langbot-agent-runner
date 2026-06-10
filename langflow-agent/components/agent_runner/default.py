@@ -13,7 +13,6 @@ import uuid
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
-    AgentRunnerCapabilities,
     AgentRunResult,
 )
 from langbot_plugin.api.entities.builtin.provider.message import Message, MessageChunk
@@ -43,15 +42,6 @@ class DefaultAgentRunner(AgentRunner):
     Runtime state (from ctx.state):
     - external.session_id: Langflow session ID for stateful sessions
     """
-
-    @classmethod
-    def get_capabilities(cls) -> AgentRunnerCapabilities:
-        """Get runner capabilities."""
-        return AgentRunnerCapabilities(
-            streaming=True,
-            multimodal_input=False,
-            stateful_session=True,
-        )
 
     def _validate_config(self, ctx: AgentRunContext) -> dict[str, typing.Any]:
         """Validate and return static configuration.

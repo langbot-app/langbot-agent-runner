@@ -59,17 +59,10 @@ spec:
     tool_calling: false
     knowledge_retrieval: false
     multimodal_input: true
-    event_context: false
-    platform_api: false
     interrupt: false
-    stateful_session: true
   permissions:
-    models: []
-    tools: []
-    knowledge_bases: []
-    storage: ["plugin"]
-    files: []
-    platform_api: []
+    storage:
+      - plugin
 execution:
   python:
     path: default.py
