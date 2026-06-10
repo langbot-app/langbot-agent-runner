@@ -9,7 +9,6 @@ metadata:
     en_US: Run the local Codex CLI with the current input text.
     zh_Hans: 使用当前输入文本调用本机 Codex CLI。
 spec:
-  protocol_version: "1"
   config:
     - name: execution-mode
       label:

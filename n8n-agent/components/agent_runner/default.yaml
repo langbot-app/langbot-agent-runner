@@ -9,7 +9,6 @@ metadata:
     en_US: Run an n8n workflow webhook as a LangBot AgentRunner.
     zh_Hans: 将 n8n 工作流 webhook 作为 LangBot AgentRunner 运行。
 spec:
-  protocol_version: "1"
   config:
     - name: webhook-url
       label:

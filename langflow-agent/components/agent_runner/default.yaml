@@ -9,7 +9,6 @@ metadata:
     en_US: Run a Langflow flow as a LangBot AgentRunner.
     zh_Hans: 将 Langflow 流程作为 LangBot AgentRunner 运行。
 spec:
-  protocol_version: "1"
   config:
     - name: base-url
       label:

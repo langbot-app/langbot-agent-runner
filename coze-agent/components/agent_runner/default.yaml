@@ -9,7 +9,6 @@ metadata:
     en_US: Run a Coze bot as a LangBot AgentRunner.
     zh_Hans: 将扣子机器人作为 LangBot AgentRunner 运行。
 spec:
-  protocol_version: "1"
   config:
     - name: api-key
       label:

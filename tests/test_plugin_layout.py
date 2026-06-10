@@ -87,7 +87,7 @@ def test_official_external_runner_plugins_have_protocol_v1_manifests() -> None:
         assert runner["metadata"]["name"] == "default"
         assert runner["metadata"]["label"]["en_US"] != "Default"
         assert runner["metadata"]["label"]["zh_Hans"] != "默认"
-        assert runner["spec"]["protocol_version"] == "1"
+        assert "protocol_version" not in runner["spec"]
         assert runner["execution"]["python"]["path"] == "default.py"
         assert runner["execution"]["python"]["attr"] == "DefaultAgentRunner"
 
