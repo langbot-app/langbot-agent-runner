@@ -25,7 +25,6 @@ Configuration is **static** and should not contain runtime state. Only the follo
 
 - `streaming`: yes
 - `multimodal_input`: yes
-- `stateful_session`: yes
 
 ## Runtime State
 

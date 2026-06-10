@@ -21,10 +21,6 @@ Run an n8n workflow webhook as a LangBot AgentRunner.
 | timeout | integer | no | 120 | Request timeout (seconds) |
 | output-key | string | no | response | Response output key |
 
-## Capabilities
-
-- `stateful_session`: yes
-
 ## Legacy Runner
 
 Migrated from `n8n-service-api` in LangBot.

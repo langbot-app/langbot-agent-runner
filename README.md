@@ -29,7 +29,7 @@ LangBot 默认不会内联完整历史。如果运行器需要更多上下文，
 
 进程外执行器运行器，例如 Claude Code 和 Codex，可以按需启用 SDK 负责的 LangBot MCP 桥接服务。该桥接服务由 `AgentRunner` 基类按单次运行创建，只暴露当前运行授权范围内、由注解标记的 `AgentRunExternalTools` 子集，并通过 `AgentRunAPIProxy` 把所有 LangBot 资产访问委托回宿主端；运行器子进程退出后桥接服务会停止。
 
-这不是全局 LangBot MCP 服务，运行器插件也不需要手写维护 LangBot 工具结构。SDK 负责注解、结构生成、标准输入输出 MCP 代理和 MCP 配置合并辅助逻辑；单个运行器只决定是否启用桥接服务，以及如何把生成的 MCP 配置传给自己的执行器。如果某个执行器需要 `langbot_history_page` 等桥接工具，对应运行器清单必须申请匹配的 AgentRunner 权限，LangBot 宿主端也必须为本次运行授权。
+这不是全局 LangBot MCP 服务，运行器插件也不需要手写维护 LangBot 工具结构。SDK 负责注解、结构生成、标准输入输出 MCP 代理和 MCP 配置合并辅助逻辑；单个运行器只决定是否启用桥接服务，以及如何把生成的 MCP 配置传给自己的执行器。如果某个执行器需要 `langbot_history_page` 等桥接工具，LangBot 宿主端必须在本次运行的 `ctx.context.available_apis` / run authorization snapshot 中授权。
 
 ## 远端执行守护进程
 

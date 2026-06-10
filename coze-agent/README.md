@@ -20,7 +20,6 @@ Run a Coze bot as a LangBot AgentRunner.
 
 - `streaming`: yes
 - `multimodal_input`: yes
-- `stateful_session`: yes
 
 ## Legacy Runner
 

@@ -13,10 +13,6 @@ Run an Ant Tbox application as a LangBot AgentRunner.
 | api-key | string | yes | '' | Tbox API key |
 | app-id | string | yes | '' | Application ID |
 
-## Capabilities
-
-- `stateful_session`: yes
-
 ## Legacy Runner
 
 Migrated from `tbox-app-api` in LangBot.

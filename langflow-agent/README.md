@@ -17,10 +17,6 @@ Run a Langflow flow as a LangBot AgentRunner.
 | output-type | string | no | chat | Output type |
 | tweaks | json | no | {} | Flow tweaks |
 
-## Capabilities
-
-- `stateful_session`: yes
-
 ## Legacy Runner
 
 Migrated from `langflow-api` in LangBot.

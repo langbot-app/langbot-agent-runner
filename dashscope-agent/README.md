@@ -18,7 +18,6 @@ Run an Aliyun DashScope application as a LangBot AgentRunner.
 ## Capabilities
 
 - `streaming`: yes
-- `stateful_session`: yes
 
 ## Legacy Runner
 
