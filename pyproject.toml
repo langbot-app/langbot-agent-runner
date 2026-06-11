@@ -29,15 +29,13 @@ ignore = ["E501"]
 
 [tool.hatch.build.targets.wheel]
 only-include = [
-    "claude-code-agent",
-    "codex-agent",
     "coze-agent",
     "dashscope-agent",
     "dify-agent",
     "docs",
     "langflow-agent",
+    "litellm-agent-platform-agent",
     "n8n-agent",
-    "remote_agent_daemon",
     "tbox-agent",
 ]
 

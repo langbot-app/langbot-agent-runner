@@ -27,33 +27,9 @@ LangBot 默认不会内联完整历史。如果运行器需要更多上下文，
 
 进程内运行器，例如 `local-agent`，应直接调用 `AgentRunAPIProxy`。
 
-进程外执行器运行器，例如 Claude Code 和 Codex，可以按需启用 SDK 负责的 LangBot MCP 桥接服务。该桥接服务由 `AgentRunner` 基类按单次运行创建，只暴露当前运行授权范围内、由注解标记的 `AgentRunExternalTools` 子集，并通过 `AgentRunAPIProxy` 把所有 LangBot 资产访问委托回宿主端；运行器子进程退出后桥接服务会停止。
+进程外执行器运行器，例如 LiteLLM Agent Platform 管理的 harness，可以通过稳定的 LangBot MCP gateway 回访 LangBot 资产。该 gateway 只暴露当前 LangBot 授权的工具、知识库和历史访问入口，所有请求仍会被宿主端按 `run_id`、资源授权快照和调用方插件身份校验。
 
-这不是全局 LangBot MCP 服务，运行器插件也不需要手写维护 LangBot 工具结构。SDK 负责注解、结构生成、标准输入输出 MCP 代理和 MCP 配置合并辅助逻辑；单个运行器只决定是否启用桥接服务，以及如何把生成的 MCP 配置传给自己的执行器。如果某个执行器需要 `langbot_history_page` 等桥接工具，LangBot 宿主端必须在本次运行的 `ctx.context.available_apis` / run authorization snapshot 中授权。
-
-## 远端执行守护进程
-
-代码执行器运行器可以复用无第三方依赖的 `remote_agent_daemon` 包来执行远端任务。远端机器应安装本仓库，不要手动复制守护进程源码文件：
-
-```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install "git+https://github.com/langbot-app/langbot-agent-runner.git@main"
-```
-
-然后启动守护进程，并通过 `--agent` 选择适配器，例如：
-
-```bash
-python -m remote_agent_daemon \
-  --agent codex \
-  --host 0.0.0.0 \
-  --port 8766 \
-  --base-dir /path/to/langbot-remote-workspaces \
-  --command-path /home/agent-user/.local/bin \
-  --token "$LANGBOT_REMOTE_AGENT_TOKEN"
-```
-
-守护进程负责 HTTP 鉴权、工作区物化、子进程执行和结果传输。智能体相关行为放在小型命令适配器中，例如 `claude-code` 和 `codex`；未来接入 pi、kimi 等执行器时，应新增适配器，而不是复制守护进程。
+这不是全局 LangBot MCP 服务，运行器插件也不需要手写维护 LangBot 工具结构。单个运行器只负责把 LangBot 的 run 级指令、gateway 连接信息和输入转交给目标平台；如果目标平台需要 `langbot_history_page` 等桥接工具，LangBot 宿主端必须在本次运行的 `ctx.context.available_apis` / run authorization snapshot 中授权。
 
 ## 插件列表
 
@@ -62,10 +38,9 @@ python -m remote_agent_daemon \
 | `dify-agent` | `plugin:langbot/dify-agent/default` | `dify-service-api` | Dify 应用集成 |
 | `n8n-agent` | `plugin:langbot/n8n-agent/default` | `n8n-service-api` | n8n 工作流 webhook 集成 |
 | `coze-agent` | `plugin:langbot/coze-agent/default` | `coze-api` | Coze（扣子）机器人集成 |
-| `claude-code-agent` | `plugin:langbot/claude-code-agent/default` | - | 本地 Claude Code CLI 集成 |
-| `codex-agent` | `plugin:langbot/codex-agent/default` | - | 本地 Codex CLI 集成 |
 | `dashscope-agent` | `plugin:langbot/dashscope-agent/default` | `dashscope-app-api` | 阿里云 DashScope（百炼）集成 |
 | `langflow-agent` | `plugin:langbot/langflow-agent/default` | `langflow-api` | Langflow 流程集成 |
+| `litellm-agent-platform-agent` | `plugin:langbot/litellm-agent-platform-agent/default` | - | LiteLLM Agent Platform / lite-harness 统一 harness 集成 |
 | `tbox-agent` | `plugin:langbot/tbox-agent/default` | `tbox-app-api` | 蚂蚁 Tbox（百宝箱）集成 |
 
 官方 `local-agent` 运行器维护在相邻的 `langbot-local-agent` 仓库中，因为它会直接调用 LangBot 托管的模型和工具，并拥有独立的测试面。
