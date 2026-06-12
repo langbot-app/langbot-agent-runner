@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="ACP Agent Runner">
+  <rect width="128" height="128" rx="22" fill="#0f172a"/>
+  <path d="M31 39h66v50H31z" fill="#f8fafc"/>
+  <path d="M42 53h44v7H42zM42 68h30v7H42z" fill="#2563eb"/>
+  <path d="M28 36h72v12H28z" fill="#38bdf8"/>
+  <circle cx="92" cy="82" r="18" fill="#22c55e"/>
+  <path d="M84 82l6 6 11-13" fill="none" stroke="#f8fafc" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

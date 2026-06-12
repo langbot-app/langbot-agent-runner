@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="LiteLLM Agent Platform">
-  <rect width="64" height="64" rx="14" fill="#111827"/>
-  <path d="M18 43V21h7v16h21v6H18Z" fill="#FFFFFF"/>
-  <path d="M31 27h15v6H31v-6Z" fill="#A78BFA"/>
-  <circle cx="48" cy="21" r="5" fill="#34D399"/>
-</svg>

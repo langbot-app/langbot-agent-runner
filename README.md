@@ -27,7 +27,7 @@ LangBot 默认不会内联完整历史。如果运行器需要更多上下文，
 
 进程内运行器，例如 `local-agent`，应直接调用 `AgentRunAPIProxy`。
 
-进程外执行器运行器，例如 LiteLLM Agent Platform 管理的 harness，可以通过稳定的 LangBot MCP gateway 回访 LangBot 资产。该 gateway 只暴露当前 LangBot 授权的工具、知识库和历史访问入口，所有请求仍会被宿主端按 `run_id`、资源授权快照和调用方插件身份校验。
+进程外执行器运行器，例如 ACP 兼容的编码智能体，可以通过 SDK 提供的 run-scoped MCP bridge 回访 LangBot 资产。该 bridge 只暴露当前 LangBot 授权的工具、知识库和历史访问入口，所有请求仍会被宿主端按 `run_id`、资源授权快照和调用方插件身份校验。
 
 这不是全局 LangBot MCP 服务，运行器插件也不需要手写维护 LangBot 工具结构。单个运行器只负责把 LangBot 的 run 级指令、gateway 连接信息和输入转交给目标平台；如果目标平台需要 `langbot_history_page` 等桥接工具，LangBot 宿主端必须在本次运行的 `ctx.context.available_apis` / run authorization snapshot 中授权。
 
@@ -35,12 +35,12 @@ LangBot 默认不会内联完整历史。如果运行器需要更多上下文，
 
 | 插件 | 运行器标识 | 替代对象 | 说明 |
 | --- | --- | --- | --- |
+| `acp-agent-runner` | `plugin:langbot/acp-agent-runner/default` | - | Agent Client Protocol 统一编码智能体集成 |
 | `dify-agent` | `plugin:langbot/dify-agent/default` | `dify-service-api` | Dify 应用集成 |
 | `n8n-agent` | `plugin:langbot/n8n-agent/default` | `n8n-service-api` | n8n 工作流 webhook 集成 |
 | `coze-agent` | `plugin:langbot/coze-agent/default` | `coze-api` | Coze（扣子）机器人集成 |
 | `dashscope-agent` | `plugin:langbot/dashscope-agent/default` | `dashscope-app-api` | 阿里云 DashScope（百炼）集成 |
 | `langflow-agent` | `plugin:langbot/langflow-agent/default` | `langflow-api` | Langflow 流程集成 |
-| `litellm-agent-platform-agent` | `plugin:langbot/litellm-agent-platform-agent/default` | - | LiteLLM Agent Platform / lite-harness 统一 harness 集成 |
 | `tbox-agent` | `plugin:langbot/tbox-agent/default` | `tbox-app-api` | 蚂蚁 Tbox（百宝箱）集成 |
 
 官方 `local-agent` 运行器维护在相邻的 `langbot-local-agent` 仓库中，因为它会直接调用 LangBot 托管的模型和工具，并拥有独立的测试面。
