@@ -36,12 +36,14 @@ LangBot 默认不会内联完整历史。如果运行器需要更多上下文，
 | 插件 | 运行器标识 | 替代对象 | 说明 |
 | --- | --- | --- | --- |
 | `acp-agent-runner` | `plugin:langbot/acp-agent-runner/default` | - | Agent Client Protocol 统一编码智能体集成 |
+| `deerflow-agent` | `plugin:langbot/deerflow-agent/default` | `deerflow-api` | DeerFlow LangGraph 集成 |
 | `dify-agent` | `plugin:langbot/dify-agent/default` | `dify-service-api` | Dify 应用集成 |
 | `n8n-agent` | `plugin:langbot/n8n-agent/default` | `n8n-service-api` | n8n 工作流 webhook 集成 |
 | `coze-agent` | `plugin:langbot/coze-agent/default` | `coze-api` | Coze（扣子）机器人集成 |
 | `dashscope-agent` | `plugin:langbot/dashscope-agent/default` | `dashscope-app-api` | 阿里云 DashScope（百炼）集成 |
 | `langflow-agent` | `plugin:langbot/langflow-agent/default` | `langflow-api` | Langflow 流程集成 |
 | `tbox-agent` | `plugin:langbot/tbox-agent/default` | `tbox-app-api` | 蚂蚁 Tbox（百宝箱）集成 |
+| `weknora-agent` | `plugin:langbot/weknora-agent/default` | `weknora-api` | WeKnora 智能体和知识库问答集成 |
 
 官方 `local-agent` 运行器维护在相邻的 `langbot-local-agent` 仓库中，因为它会直接调用 LangBot 托管的模型和工具，并拥有独立的测试面。
 

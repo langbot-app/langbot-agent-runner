@@ -32,11 +32,13 @@ only-include = [
     "acp-agent-runner",
     "coze-agent",
     "dashscope-agent",
+    "deerflow-agent",
     "dify-agent",
     "docs",
     "langflow-agent",
     "n8n-agent",
     "tbox-agent",
+    "weknora-agent",
 ]
 
 [tool.uv.sources]

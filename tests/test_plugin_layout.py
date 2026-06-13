@@ -12,10 +12,12 @@ PLUGIN_DIRS = {
     "acp-agent-runner",
     "coze-agent",
     "dashscope-agent",
+    "deerflow-agent",
     "dify-agent",
     "langflow-agent",
     "n8n-agent",
     "tbox-agent",
+    "weknora-agent",
 }
 
 
@@ -154,10 +156,12 @@ def test_runners_use_protocol_v1_actor_fields_for_user_identity() -> None:
 
     for plugin_dir, method_name in {
         "coze-agent": "_get_user_id",
+        "deerflow-agent": "_get_user_tag",
         "dify-agent": "_get_user_tag",
         "langflow-agent": "_get_user_tag",
         "n8n-agent": "_get_user_tag",
         "tbox-agent": "_get_user_id",
+        "weknora-agent": "_get_user_tag",
     }.items():
         module = _load_runner_module(plugin_dir)
         runner = object.__new__(module.DefaultAgentRunner)
