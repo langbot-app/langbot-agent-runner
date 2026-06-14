@@ -37,6 +37,71 @@ def _get_adapter_params(ctx: AgentRunContext) -> dict[str, typing.Any]:
     return dict(params) if isinstance(params, dict) else {}
 
 
+def _int_or_none(value: typing.Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_int(mapping: dict[str, typing.Any], *keys: str) -> int | None:
+    for key in keys:
+        value = _int_or_none(mapping.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _usage_from_payload(*payloads: typing.Any) -> dict[str, typing.Any] | None:
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+
+        usage = payload.get("usage")
+        if not isinstance(usage, dict):
+            metadata = payload.get("metadata")
+            if isinstance(metadata, dict):
+                usage = metadata.get("usage")
+        if not isinstance(usage, dict):
+            data = payload.get("data")
+            if isinstance(data, dict):
+                usage = data.get("usage")
+        token_keys = {
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "input_tokens",
+            "output_tokens",
+            "input_count",
+            "output_count",
+            "token_count",
+            "total_count",
+        }
+        if not isinstance(usage, dict) and token_keys.intersection(payload):
+            usage = payload
+        if not isinstance(usage, dict):
+            continue
+
+        normalized = dict(usage)
+        prompt_tokens = _first_int(usage, "prompt_tokens", "input_tokens", "input_count")
+        completion_tokens = _first_int(usage, "completion_tokens", "output_tokens", "output_count")
+        total_tokens = _first_int(usage, "total_tokens", "token_count", "total_count")
+
+        if prompt_tokens is not None:
+            normalized["prompt_tokens"] = prompt_tokens
+        if completion_tokens is not None:
+            normalized["completion_tokens"] = completion_tokens
+        if total_tokens is None and (prompt_tokens is not None or completion_tokens is not None):
+            total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+        if total_tokens is not None:
+            normalized["total_tokens"] = total_tokens
+
+        return normalized or None
+    return None
+
+
 class DefaultAgentRunner(AgentRunner):
     """Real AgentRunner for DashScope (阿里云百炼) API.
 
@@ -170,6 +235,7 @@ class DefaultAgentRunner(AgentRunner):
 
         think_start = False
         think_end = False
+        usage: dict[str, typing.Any] | None = None
 
         # Check if thinking should be enabled (default: True)
         # Can be controlled via adapter params if needed
@@ -194,6 +260,7 @@ class DefaultAgentRunner(AgentRunner):
                 continue
 
             stream_output = chunk.get("output", {})
+            usage = _usage_from_payload(chunk, stream_output) or usage
 
             # Track session_id for stateful session
             if stream_output.get("session_id"):
@@ -254,7 +321,7 @@ class DefaultAgentRunner(AgentRunner):
                 scope="conversation",
             )
 
-        yield AgentRunResult.run_completed(ctx.run_id)
+        yield AgentRunResult.run_completed(ctx.run_id, usage=usage)
 
     async def _run_workflow(
         self,
@@ -270,6 +337,7 @@ class DefaultAgentRunner(AgentRunner):
         pending_content = ""
         references_dict: dict[str, str] = {}
         final_session_id = session_id
+        usage: dict[str, typing.Any] | None = None
 
         # Get business parameters from context
         biz_params = self._get_biz_params(ctx)
@@ -293,6 +361,7 @@ class DefaultAgentRunner(AgentRunner):
                 continue
 
             stream_output = chunk.get("output", {})
+            usage = _usage_from_payload(chunk, stream_output) or usage
 
             # Track session_id for stateful session
             if stream_output.get("session_id"):
@@ -345,4 +414,4 @@ class DefaultAgentRunner(AgentRunner):
                 scope="conversation",
             )
 
-        yield AgentRunResult.run_completed(ctx.run_id)
+        yield AgentRunResult.run_completed(ctx.run_id, usage=usage)

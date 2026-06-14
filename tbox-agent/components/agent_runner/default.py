@@ -86,6 +86,76 @@ def _attachments_from_contents(contents: list[typing.Any]) -> list[dict[str, typ
     return attachments
 
 
+def _int_or_none(value: typing.Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_int(mapping: dict[str, typing.Any], *keys: str) -> int | None:
+    for key in keys:
+        value = _int_or_none(mapping.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _usage_from_payload(*payloads: typing.Any) -> dict[str, typing.Any] | None:
+    for payload in payloads:
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+        if not isinstance(payload, dict):
+            continue
+
+        usage = payload.get("usage")
+        if not isinstance(usage, dict):
+            metadata = payload.get("metadata")
+            if isinstance(metadata, dict):
+                usage = metadata.get("usage")
+        if not isinstance(usage, dict):
+            data = payload.get("data")
+            if isinstance(data, dict):
+                usage = data.get("usage")
+        token_keys = {
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "input_tokens",
+            "output_tokens",
+            "input_count",
+            "output_count",
+            "token_count",
+            "total_count",
+        }
+        if not isinstance(usage, dict) and token_keys.intersection(payload):
+            usage = payload
+        if not isinstance(usage, dict):
+            continue
+
+        normalized = dict(usage)
+        prompt_tokens = _first_int(usage, "prompt_tokens", "input_tokens", "input_count")
+        completion_tokens = _first_int(usage, "completion_tokens", "output_tokens", "output_count")
+        total_tokens = _first_int(usage, "total_tokens", "token_count", "total_count")
+
+        if prompt_tokens is not None:
+            normalized["prompt_tokens"] = prompt_tokens
+        if completion_tokens is not None:
+            normalized["completion_tokens"] = completion_tokens
+        if total_tokens is None and (prompt_tokens is not None or completion_tokens is not None):
+            total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+        if total_tokens is not None:
+            normalized["total_tokens"] = total_tokens
+
+        return normalized or None
+    return None
+
+
 class DefaultAgentRunner(AgentRunner):
     """Real AgentRunner for Tbox (蚂蚁百宝箱) API.
 
@@ -267,6 +337,7 @@ class DefaultAgentRunner(AgentRunner):
         idx_msg = 0
         think_start = False
         think_end = False
+        usage: dict[str, typing.Any] | None = None
 
         async for chunk in client.chat(
             app_id=app_id,
@@ -277,6 +348,7 @@ class DefaultAgentRunner(AgentRunner):
             files=files if files else None,
         ):
             chunk_type = chunk.get("type", "")
+            usage = _usage_from_payload(chunk, chunk.get("payload"), chunk.get("data")) or usage
 
             if is_stream:
                 # Handle streaming chunks
@@ -396,4 +468,4 @@ class DefaultAgentRunner(AgentRunner):
                 scope="conversation",
             )
 
-        yield AgentRunResult.run_completed(ctx.run_id)
+        yield AgentRunResult.run_completed(ctx.run_id, usage=usage)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import tomllib
+import types
 from pathlib import Path
 
 import yaml
@@ -125,6 +126,60 @@ def test_multimodal_runners_decode_data_url_attachments_and_derive_from_contents
                 "content_type": "text/plain",
             }
         ]
+
+
+def test_external_runner_usage_normalizers_preserve_provider_usage() -> None:
+    coze = _load_runner_module("coze-agent")
+    assert coze._usage_from_payload({"usage": {"input_count": 11, "output_count": 7, "token_count": 18}}) == {
+        "input_count": 11,
+        "output_count": 7,
+        "token_count": 18,
+        "prompt_tokens": 11,
+        "completion_tokens": 7,
+        "total_tokens": 18,
+    }
+
+    dify = _load_runner_module("dify-agent")
+    assert dify._usage_from_payload(
+        {
+            "metadata": {
+                "usage": {
+                    "prompt_tokens": 13,
+                    "completion_tokens": 5,
+                    "total_tokens": 18,
+                    "total_price": "0.0001",
+                }
+            }
+        }
+    ) == {
+        "prompt_tokens": 13,
+        "completion_tokens": 5,
+        "total_tokens": 18,
+        "total_price": "0.0001",
+    }
+
+    remove_dashscope_stub = "dashscope" not in sys.modules
+    if remove_dashscope_stub:
+        sys.modules["dashscope"] = types.SimpleNamespace(Application=object())
+    try:
+        dashscope = _load_runner_module("dashscope-agent")
+    finally:
+        if remove_dashscope_stub:
+            sys.modules.pop("dashscope", None)
+    assert dashscope._usage_from_payload({"usage": {"input_tokens": 3, "output_tokens": 4}}) == {
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "prompt_tokens": 3,
+        "completion_tokens": 4,
+        "total_tokens": 7,
+    }
+
+    tbox = _load_runner_module("tbox-agent")
+    assert tbox._usage_from_payload({"data": {}}, {"usage": {"prompt_tokens": "2", "completion_tokens": "8"}}) == {
+        "prompt_tokens": 2,
+        "completion_tokens": 8,
+        "total_tokens": 10,
+    }
 
 
 def test_runners_use_protocol_v1_actor_fields_for_user_identity() -> None:

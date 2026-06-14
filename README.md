@@ -57,6 +57,7 @@ LangBot 默认不会内联完整历史。如果运行器需要更多上下文，
 - 从 `ctx.config` 读取静态运行器绑定配置。
 - 尊重 `ctx.resources`，并通过 `AgentRunAPIProxy` 访问任何由宿主端代理的模型、工具、知识、历史、事件、制品、状态或存储。
 - 使用 `ctx.context` 判断是否可以拉取更多历史、制品或状态。
+- 当第三方平台的完成事件或响应元数据提供 token usage 时，在 terminal `run.completed` 的 `usage` 字段上报最终聚合 usage；失败前已知的部分 usage 可随 `run.failed` 上报。不能观测 usage 时应省略该字段，表示 unknown，而不是 0。
 
 Pipeline 适配字段只用于适配层：
 
