@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from langbot_plugin.api.definition.plugin import BasePlugin
+from pkg.daemon_hub import daemon_hub_config_from_plugin_config, get_daemon_hub
 
 
 class AcpAgentRunnerPlugin(BasePlugin):
@@ -13,4 +14,10 @@ class AcpAgentRunnerPlugin(BasePlugin):
 
     async def initialize(self) -> None:
         """Initialize the plugin."""
-        return
+        config = daemon_hub_config_from_plugin_config(self.get_config())
+        if config["enabled"]:
+            await get_daemon_hub().start(
+                host=config["host"],
+                port=config["port"],
+                token=config["token"],
+            )

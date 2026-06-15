@@ -90,8 +90,8 @@ spec:
         en_US: Run Location
         zh_Hans: 运行位置
       description:
-        en_US: Run the ACP process on the LangBot host or start it through SSH on another machine.
-        zh_Hans: 在 LangBot 所在机器运行 ACP 进程，或通过 SSH 在另一台机器启动。
+        en_US: Run the ACP process locally, through SSH, or through a user-side daemon that connects outward.
+        zh_Hans: 在本机、通过 SSH，或通过主动连接的用户侧 daemon 运行 ACP 进程。
       type: select
       required: true
       default: local
@@ -104,6 +104,10 @@ spec:
           label:
             en_US: Remote SSH
             zh_Hans: 远程 SSH
+        - name: daemon
+          label:
+            en_US: Runner Daemon
+            zh_Hans: Runner Daemon
     - name: workspace
       label:
         en_US: Workspace
@@ -128,6 +132,34 @@ spec:
         field: location
         operator: eq
         value: remote-ssh
+    - name: daemon-id
+      label:
+        en_US: Daemon ID
+        zh_Hans: Daemon ID
+      description:
+        en_US: Stable ID of the user-side runner daemon connected to this plugin's daemon hub.
+        zh_Hans: 已连接到此插件 Daemon Hub 的用户侧 runner daemon 稳定 ID。
+      type: string
+      required: false
+      default: ''
+      show_if:
+        field: location
+        operator: eq
+        value: daemon
+    - name: daemon-connect-timeout
+      label:
+        en_US: Daemon Connect Timeout
+        zh_Hans: Daemon 连接等待超时
+      description:
+        en_US: Seconds to wait for the selected daemon to be online before failing this run.
+        zh_Hans: 本次运行失败前等待所选 daemon 在线的秒数。
+      type: integer
+      required: false
+      default: 30
+      show_if:
+        field: location
+        operator: eq
+        value: daemon
     - name: ssh-port
       label:
         en_US: SSH Port

@@ -28,6 +28,10 @@ def _load_yaml(path: Path) -> dict:
 
 
 def _load_runner_module(plugin_dir: str):
+    return _load_plugin_module(plugin_dir, "components/agent_runner/default.py", "runner")
+
+
+def _load_plugin_module(plugin_dir: str, relative_path: str, suffix: str):
     for module_name in list(sys.modules):
         if module_name == "pkg" or module_name.startswith("pkg."):
             del sys.modules[module_name]
@@ -35,8 +39,8 @@ def _load_runner_module(plugin_dir: str):
     plugin_root = ROOT / plugin_dir
     sys.path.insert(0, str(plugin_root))
     try:
-        module_path = plugin_root / "components" / "agent_runner" / "default.py"
-        spec = importlib.util.spec_from_file_location(f"test_{plugin_dir.replace('-', '_')}_runner", module_path)
+        module_path = plugin_root / relative_path
+        spec = importlib.util.spec_from_file_location(f"test_{plugin_dir.replace('-', '_')}_{suffix}", module_path)
         module = importlib.util.module_from_spec(spec)
         assert spec and spec.loader
         spec.loader.exec_module(module)
@@ -117,6 +121,96 @@ def test_acp_provider_presets_match_runner_config() -> None:
         "sigit",
     }
     assert unsupported.isdisjoint(option_names)
+
+
+def test_acp_runner_declares_daemon_location() -> None:
+    acp_manifest = _load_yaml(ROOT / "acp-agent-runner" / "manifest.yaml")
+    plugin_config_names = {item["name"] for item in acp_manifest["spec"]["config"]}
+    assert {"daemon-enabled", "daemon-host", "daemon-port", "daemon-token"} <= plugin_config_names
+
+    acp_runner = _load_yaml(ROOT / "acp-agent-runner" / "components" / "agent_runner" / "default.yaml")
+    location_config = next(item for item in acp_runner["spec"]["config"] if item["name"] == "location")
+    assert {option["name"] for option in location_config["options"]} == {"local", "remote-ssh", "daemon"}
+    assert any(item["name"] == "daemon-id" for item in acp_runner["spec"]["config"])
+
+
+def test_acp_runner_validates_daemon_location_config() -> None:
+    module = _load_runner_module("acp-agent-runner")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {
+        "daemon-host": "0.0.0.0",
+        "daemon-port": 18766,
+        "daemon-token": "secret",
+    }
+
+    ctx = types.SimpleNamespace(
+        config={
+            "provider": "codex",
+            "location": "daemon",
+            "daemon-id": "alice-laptop",
+            "workspace": "/tmp/project",
+        }
+    )
+    config = runner._validate_config(ctx)
+
+    assert config["location"] == "daemon"
+    assert config["daemon_id"] == "alice-laptop"
+    assert config["daemon_hub"] == {
+        "enabled": False,
+        "host": "0.0.0.0",
+        "port": 18766,
+        "token": "secret",
+    }
+
+    ctx.config["daemon-id"] = ""
+    try:
+        runner._validate_config(ctx)
+    except module.AcpError as exc:
+        assert exc.code == "acp.config_invalid"
+        assert "daemon-id is required" in exc.message
+    else:
+        raise AssertionError("daemon-id should be required when location=daemon")
+
+
+def test_acp_daemon_tool_events_match_agent_run_result_schema() -> None:
+    import asyncio
+
+    from langbot_plugin.api.entities.builtin.agent_runner import AgentRunResult
+
+    module = _load_plugin_module("acp-agent-runner", "daemon.py", "daemon")
+    daemon = object.__new__(module.RunnerDaemon)
+    events = []
+
+    async def fake_emit(job_id, event):
+        events.append((job_id, event))
+
+    daemon._emit = fake_emit
+
+    asyncio.run(
+        daemon._emit_tool_update(
+            "job-1",
+            {"toolCallId": "tool-1", "name": "read_file", "status": "pending"},
+            set(),
+        )
+    )
+
+    assert events == [
+        (
+            "job-1",
+            {
+                "type": "tool.call.started",
+                "data": {
+                    "tool_call_id": "tool-1",
+                    "tool_name": "read_file",
+                    "parameters": {},
+                },
+            },
+        )
+    ]
+
+    event = dict(events[0][1])
+    event["run_id"] = "run-1"
+    AgentRunResult.model_validate(event)
 
 
 def test_acp_runner_uses_sdk_mcp_bridge_helper(monkeypatch) -> None:

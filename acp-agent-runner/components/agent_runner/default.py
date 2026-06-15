@@ -11,6 +11,7 @@ import typing
 import urllib.parse
 
 from langbot_plugin.api.agent_tools import (
+    AgentRunExternalTools,
     AgentRunMCPBridge,
     get_default_agent_asset_gateway,
 )
@@ -21,6 +22,7 @@ from langbot_plugin.api.entities.builtin.agent_runner import (
 )
 from langbot_plugin.api.entities.builtin.provider.message import Message, MessageChunk
 from pkg.acp_client import AcpError, AcpStdioClient
+from pkg.daemon_hub import DaemonHubError, daemon_hub_config_from_plugin_config, get_daemon_hub
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +48,7 @@ DEFAULT_PROVIDER_COMMANDS = {
     "qwen-code": "npx -y @qwen-code/qwen-code --acp --experimental-skills",
 }
 SUPPORTED_PROVIDERS = set(DEFAULT_PROVIDER_COMMANDS) | {"custom"}
-SUPPORTED_LOCATIONS = {"local", "remote-ssh"}
+SUPPORTED_LOCATIONS = {"local", "remote-ssh", "daemon"}
 SUPPORTED_REMOTE_SHELLS = {"bash", "powershell", "none"}
 SUPPORTED_LANGBOT_ASSET_MODES = {"auto", "ephemeral", "gateway"}
 
@@ -334,6 +336,10 @@ class DefaultAgentRunner(AgentRunner):
         if location == "remote-ssh" and not ssh_target:
             raise AcpError("ssh-target is required when location=remote-ssh", code="acp.config_invalid")
 
+        daemon_id = _first_config_value(config, "daemon-id", "daemon_id")
+        if location == "daemon" and not daemon_id:
+            raise AcpError("daemon-id is required when location=daemon", code="acp.config_invalid")
+
         remote_shell = str(config.get("remote-shell", "bash") or "bash").strip()
         if remote_shell not in SUPPORTED_REMOTE_SHELLS:
             raise AcpError(
@@ -368,6 +374,8 @@ class DefaultAgentRunner(AgentRunner):
             "ssh_identity_file": _first_config_value(config, "ssh-identity-file", "ssh-key-file"),
             "ssh_connect_timeout": _to_int(config.get("ssh-connect-timeout"), 10),
             "ssh_extra_options": _parse_args(config.get("ssh-extra-options")),
+            "daemon_id": daemon_id,
+            "daemon_connect_timeout": _to_float(config.get("daemon-connect-timeout"), 30.0),
             "remote_shell": remote_shell,
             "timeout": _to_float(config.get("timeout"), 300.0),
             "startup_timeout": _to_float(config.get("startup-timeout"), 30.0),
@@ -406,6 +414,7 @@ class DefaultAgentRunner(AgentRunner):
                 "langbot-assets-gateway-public-url",
                 "mcp-public-url",
             ),
+            "daemon_hub": daemon_hub_config_from_plugin_config(self.get_plugin_config()),
         }
 
     def _input_text(self, ctx: AgentRunContext) -> str:
@@ -711,6 +720,63 @@ class DefaultAgentRunner(AgentRunner):
         yield AgentRunResult.message_completed(ctx.run_id, Message(role="assistant", content=final_text))
         yield AgentRunResult.run_completed(ctx.run_id, finish_reason="stop")
 
+    def _daemon_payload(
+        self,
+        ctx: AgentRunContext,
+        config: dict[str, typing.Any],
+        prompt_text: str,
+    ) -> dict[str, typing.Any]:
+        return {
+            "run_id": ctx.run_id,
+            "prompt_text": prompt_text,
+            "input_text": self._input_text(ctx),
+            "config": {
+                "provider": config["provider"],
+                "acp_command": config["acp_command"],
+                "workspace": config["workspace"],
+                "cwd": config["workspace"] or None,
+                "session_cwd": config["session_cwd"],
+                "env": config["env"],
+                "timeout": config["timeout"],
+                "startup_timeout": config["startup_timeout"],
+                "initialize_timeout": config["initialize_timeout"],
+                "reuse_session": config["reuse_session"],
+                "create_session_if_missing": config["create_session_if_missing"],
+                "streaming": config["streaming"],
+                "permission_decision": config["permission_decision"],
+                "stored_session_id": self._stored_session_id(ctx),
+                "mcp_servers": config["mcp_servers"],
+                "langbot_assets_enabled": config["mcp_bridge_enabled"],
+                "mcp_request_timeout": config["mcp_bridge_request_timeout"],
+            },
+        }
+
+    async def _run_daemon(
+        self,
+        ctx: AgentRunContext,
+        config: dict[str, typing.Any],
+        prompt_text: str,
+    ) -> typing.AsyncGenerator[AgentRunResult, None]:
+        hub = get_daemon_hub()
+        if not hub.is_running:
+            await hub.start(
+                host=config["daemon_hub"]["host"],
+                port=config["daemon_hub"]["port"],
+                token=config["daemon_hub"]["token"],
+            )
+
+        await hub.wait_for_daemon(config["daemon_id"], config["daemon_connect_timeout"])
+        tools = AgentRunExternalTools(self.get_run_api(ctx), ctx) if config["mcp_bridge_enabled"] else None
+        payload = self._daemon_payload(ctx, config, prompt_text)
+        async for event in hub.run_job(
+            daemon_id=config["daemon_id"],
+            payload=payload,
+            tools=tools,
+            timeout=config["timeout"],
+        ):
+            event.setdefault("run_id", ctx.run_id)
+            yield AgentRunResult.model_validate(event)
+
     async def run(self, ctx: AgentRunContext) -> typing.AsyncGenerator[AgentRunResult, None]:
         try:
             config = self._validate_config(ctx)
@@ -724,6 +790,17 @@ class DefaultAgentRunner(AgentRunner):
             return
 
         prompt_text = self._with_run_scope_prompt(ctx, input_text) if config["append_run_scope_prompt"] else input_text
+
+        if config["location"] == "daemon":
+            try:
+                async for result in self._run_daemon(ctx, config, prompt_text):
+                    yield result
+            except DaemonHubError as exc:
+                yield AgentRunResult.run_failed(ctx.run_id, error=exc.message, code=exc.code, retryable=exc.retryable)
+            except Exception as exc:
+                logger.exception("ACP daemon transport failed: %s", exc)
+                yield AgentRunResult.run_failed(ctx.run_id, error=str(exc), code="acp.daemon_unexpected")
+            return
 
         bridge = None
         client: AcpStdioClient | None = None
