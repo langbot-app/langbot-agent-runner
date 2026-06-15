@@ -5,8 +5,8 @@
 It is a thin runtime adapter:
 
 - LangBot remains the control plane.
-- The plugin starts an ACP server over stdio, such as `codex-acp`, `claude-agent-acp`, `opencode acp`, or `gemini --acp`.
-- The plugin speaks ACP JSON-RPC: `initialize`, `session/new` or `session/resume`, and `session/prompt`.
+- The plugin starts an ACP server over stdio, such as `npx -y @zed-industries/codex-acp`, `npx -y @agentclientprotocol/claude-agent-acp`, `opencode acp`, or `npx -y @google/gemini-cli --acp`.
+- The plugin speaks ACP JSON-RPC: `initialize`, `session/new`, `session/load` or `session/resume`, and `session/prompt`.
 - ACP `session/update` text chunks are streamed back to LangBot.
 - LangBot tools, knowledge bases, and history are exposed through the SDK-owned run-scoped MCP bridge.
 
@@ -35,9 +35,47 @@ workspace = /path/to/workspace
 acp-command = opencode acp
 ```
 
+Custom mode is for ACP stdio commands that are not built in, or for users who
+accept weaker/no ACP session recovery for a specific runtime:
+
+```text
+provider = custom
+location = local
+workspace = /path/to/workspace
+acp-command = kimi acp
+```
+
+```text
+provider = custom
+location = local
+workspace = /path/to/workspace
+acp-command = agent acp
+```
+
+```text
+provider = custom
+location = local
+workspace = /path/to/workspace
+acp-command = goose acp
+```
+
+`acp-command` must start an ACP JSON-RPC stdio server, not an interactive-only
+CLI. The runner still calls `initialize`, then `session/resume` or
+`session/load` when a stored session id exists and the runtime advertises that
+capability, otherwise `session/new`. Set `reuse-session=false` to force a fresh
+ACP session each run:
+
+```text
+provider = custom
+location = local
+workspace = /path/to/workspace
+acp-command = kimi acp
+reuse-session = false
+```
+
 Useful options:
 
-- `provider`: `claude-code`, `codex`, `opencode`, `gemini`, or `custom`.
+- `provider`: built-in ACP launch preset. Current presets are limited to ACP runtimes that advertise `loadSession` or `sessionCapabilities.resume` and have no known public cross-process resume blocker. Use `custom` for anything else.
 - `location`: `local` or `remote-ssh`.
 - `workspace`: agent workspace directory. In `remote-ssh` mode this path is on the remote machine.
 - `ssh-target`: SSH target for `remote-ssh`, for example `yhh@101.34.71.12`.
@@ -47,9 +85,57 @@ Useful options:
 - `env-json`: JSON object merged into the process environment.
 - `reuse-session`: persists and reuses `external.acp_session_id` when the ACP agent supports `session/resume` or `session/load`.
 - `langbot-assets-enabled`: injects the LangBot run-scoped MCP bridge into ACP `mcpServers`.
+- `langbot-assets-mode`: `auto`, `ephemeral`, or `gateway`. `auto` currently preserves the existing per-run bridge behavior; `gateway` registers the run in the SDK-owned long-lived HTTP MCP gateway.
+- `langbot-assets-gateway-port`: optional fixed port for `langbot-assets-mode=gateway`. Use a fixed port when another platform such as Dify needs to register the gateway URL.
+- `langbot-assets-gateway-public-url`: optional externally reachable MCP URL, for example `https://example.com/mcp`.
 
 Headless ACP permission requests are answered with `allow_once` by default.
 LangBot does not yet expose an interactive approval UI for these requests.
+
+Built-in provider commands are intentionally unpinned and assume the selected
+runtime can run on the target machine. Built-in presets must support ACP session
+recovery through `loadSession` or `sessionCapabilities.resume`; otherwise this
+runner would silently degrade into single-turn execution after each stdio
+process exits.
+
+| Provider | Default ACP command | Verified session recovery signal |
+| --- | --- | --- |
+| `auggie` | `npx -y @augmentcode/auggie --acp` | `loadSession` |
+| `autohand` | `npx -y @autohandai/autohand-acp` | `loadSession`, `session/resume` |
+| `claude-code` | `npx -y @agentclientprotocol/claude-agent-acp` | `loadSession`, `session/resume` |
+| `codebuddy-code` | `npx -y @tencent-ai/codebuddy-code --acp` | `loadSession` |
+| `codex` | `npx -y @zed-industries/codex-acp` | `loadSession`, `session/resume` |
+| `deepagents` | `npx -y deepagents-acp` | `loadSession` |
+| `dimcode` | `npx -y dimcode acp` | `loadSession`, `session/resume` |
+| `dirac` | `npx -y dirac-cli --acp` | `loadSession` |
+| `factory-droid` | `npx -y droid exec --output-format acp-daemon` | `loadSession`, `session/resume` |
+| `gemini` | `npx -y @google/gemini-cli --acp` | `loadSession` |
+| `glm-agent` | `npx -y glm-acp-agent` | `loadSession`, `session/resume` |
+| `kilo` | `npx -y @kilocode/cli acp` | `loadSession`, `session/resume` |
+| `opencode` | `opencode acp` | `loadSession`, `session/resume` |
+| `pi-acp` | `npx -y pi-acp` | `loadSession` |
+| `qwen-code` | `npx -y @qwen-code/qwen-code --acp --experimental-skills` | `loadSession`, `session/resume` |
+
+The following ACP-capable or ACP-adjacent CLIs are not built-in presets because
+they do not currently meet the session recovery bar for this runner:
+
+| Provider | Reason |
+| --- | --- |
+| `agoragentic` | `initialize` reports `loadSession: false` and no `session/resume`. |
+| `cline` | Headless `initialize` did not complete during verification, so session recovery could not be confirmed. |
+| `cursor` | Public reports show `loadSession: true` is advertised, but `session/load` fails for ACP-created sessions. |
+| `github-copilot` | Registry npx launch did not start a usable ACP binary during verification. |
+| `goose` | Upstream docs say ACP providers do not support session resume or fork yet. |
+| `kimi` | Public issue reports ACP load/switch starts with blank history even though CLI history exists. |
+| `langcli` | No registry/npm-verifiable ACP stdio package was available during verification. |
+| `nova` | Headless `initialize` did not complete during verification, so session recovery could not be confirmed. |
+| `qoder` | Public report shows ACP-created sessions cannot be loaded across process restarts despite `loadSession: true`. |
+| `sigit` | Packaged binary could not be verified in the test environment and no public session recovery evidence was found. |
+
+Other ACP-compatible runtimes from the public ACP registry can still be used via
+`provider=custom` and `acp-command`. DeepSeek's official Deep Code CLI is not a
+built-in preset yet because its current public docs describe the interactive
+`deepcode` CLI and MCP support, but do not document an ACP stdio mode.
 
 For a remote Claude ACP process over SSH:
 
@@ -60,19 +146,80 @@ ssh-target = yhh@101.34.71.12
 workspace = /home/yhh/langbot-e2e/acp-workspace
 ```
 
-The plugin automatically starts the run-scoped MCP bridge, adds an SSH reverse
-forward on the same SSH connection, and injects the remote-local HTTP MCP URL
-into ACP `mcpServers`.
+Remote mode does not connect to a long-running ACP TCP service. LangBot starts
+the ACP process itself over SSH:
 
-Remote hosts must allow non-interactive SSH login from the LangBot host and
-must already have the selected agent runtime installed and logged in.
-The SSH wrapper defaults to `bash`; Windows PowerShell remotes can still be
-configured by setting the hidden `remote-shell=powershell` key manually until a
-dedicated Windows UI option is added.
+```text
+LangBot host
+  -> ssh user@host "cd <workspace> && exec <acp-command>"
+  -> ACP JSON-RPC over ssh stdio
+```
+
+When LangBot assets are enabled, the runner also starts a temporary run-scoped
+MCP bridge on the LangBot host and adds an SSH reverse tunnel on the same SSH
+connection:
+
+```text
+remote ACP process
+  -> http://127.0.0.1:<forwarded-port>/mcp
+  -> SSH -R tunnel
+  -> LangBot run-scoped MCP bridge
+```
+
+The remote host must allow non-interactive SSH login from the LangBot host and
+must already have the selected agent runtime installed, authenticated, and
+available on `PATH` for non-interactive shells.
+
+Platform notes:
+
+- Linux remote: default path. The wrapper uses `bash -lc`, creates the workspace
+  directory, changes into it, then execs `acp-command`.
+- macOS remote: same as Linux when the remote has `bash` and the selected agent
+  runtime available to non-interactive SSH sessions. If a Homebrew/npm path is
+  missing, set it through `env-json` or use an absolute command path.
+- Windows remote: not identical to Linux/macOS. Configure the hidden
+  `remote-shell=powershell` key manually; the wrapper uses PowerShell to create
+  the workspace and run `acp-command`. Windows OpenSSH must support reverse
+  forwarding for LangBot MCP assets to work. A first-class Windows UI option is
+  not exposed yet.
+
+If a network policy blocks SSH reverse forwarding, set
+`mcp-bridge-transport=http` plus `mcp-public-url` to a URL reachable from the
+remote host, or disable LangBot asset injection with `langbot-assets-enabled=false`.
 
 ## Run-Scoped LangBot Assets
 
-The plugin starts a temporary run-scoped MCP bridge for each run. The bridge URL and token are injected into ACP `mcpServers`, and the bridge is stopped when the run finishes.
+By default the plugin starts a temporary run-scoped MCP bridge for each run. The
+bridge URL and token are injected into ACP `mcpServers`, and the bridge is
+stopped when the run finishes.
+
+To test the long-lived HTTP MCP gateway path with ACP, set:
+
+```text
+langbot-assets-enabled = true
+langbot-assets-mode = gateway
+langbot-assets-gateway-port = 8765
+```
+
+In gateway mode, the SDK starts one process-long HTTP MCP gateway and registers
+each LangBot run with a short-lived run token. ACP receives the gateway MCP URL
+and token through `mcpServers` headers, so the model can call stable LangBot
+gateway tools without seeing the token. The gateway tool list is stable and
+includes:
+
+- `langbot_list_assets`
+- `langbot_get_current_event`
+- `langbot_history_page`
+- `langbot_retrieve_knowledge`
+- `langbot_get_tool_detail`
+- `langbot_call_tool`
+
+The stable tool list is intentionally compatible with platforms such as Dify
+that cache MCP provider tools. For those platforms, the same gateway can accept
+the short-lived `run_token` as a tool argument instead of an HTTP header.
+Register the provider URL with the `/mcp` path, for example
+`http://<langbot-host>:8765/mcp` or the value configured in
+`langbot-assets-gateway-public-url`.
 
 The current LangBot `run_id` is included in the prompt for diagnostics only. ACP agents should follow MCP tool schemas exactly and should not add `run_id` to tool calls unless a specific tool schema asks for it.
 
