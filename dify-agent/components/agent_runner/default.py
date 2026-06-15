@@ -11,6 +11,7 @@ import logging
 import typing
 import uuid
 
+from langbot_plugin.api.agent_tools import get_default_agent_asset_gateway
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
@@ -27,6 +28,38 @@ from pkg.dify_client import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_LANGBOT_ASSET_TOKEN_INPUT = "langbot_asset_run_token"
+
+
+def _to_bool(value: typing.Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return default
+
+
+def _to_int(value: typing.Any, default: int) -> int:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float(value: typing.Any, default: float) -> float:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
 
 def _get_adapter_params(ctx: AgentRunContext) -> dict[str, typing.Any]:
     """Read single-run business params from adapter.extra.params."""
@@ -34,6 +67,16 @@ def _get_adapter_params(ctx: AgentRunContext) -> dict[str, typing.Any]:
         return {}
     params = (ctx.adapter.extra or {}).get("params")
     return dict(params) if isinstance(params, dict) else {}
+
+
+def _is_uuid_string(value: typing.Any) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _attachment_get(attachment: typing.Any, key: str, default: typing.Any = None) -> typing.Any:
@@ -228,6 +271,14 @@ class DefaultAgentRunner(AgentRunner):
             "base_prompt": config.get("base-prompt", ""),
             "timeout": float(config.get("timeout", 30)),
             "remove_think": bool(config.get("remove-think", False)),
+            "langbot_assets_enabled": _to_bool(config.get("langbot-assets-enabled"), False),
+            "asset_gateway_host": str(config.get("langbot-assets-gateway-host") or "0.0.0.0"),
+            "asset_gateway_port": _to_int(config.get("langbot-assets-gateway-port"), 8765),
+            "asset_gateway_request_timeout": _to_float(config.get("langbot-assets-gateway-request-timeout"), 60.0),
+            "asset_gateway_token_ttl": _to_float(config.get("langbot-assets-token-ttl"), 3600.0),
+            "asset_gateway_input_name": str(
+                config.get("langbot-assets-input-name") or DEFAULT_LANGBOT_ASSET_TOKEN_INPUT
+            ),
         }
 
     def _get_user_tag(self, ctx: AgentRunContext) -> str:
@@ -247,14 +298,11 @@ class DefaultAgentRunner(AgentRunner):
         """
         # Priority 1: State (persistent external conversation ID)
         external_conv_id = ctx.state.conversation.get("external.conversation_id")
-        if external_conv_id:
+        if _is_uuid_string(external_conv_id):
             return external_conv_id
 
-        # Priority 2: Context conversation ID (may be provided by host)
-        if ctx.conversation and ctx.conversation.conversation_id:
-            return ctx.conversation.conversation_id
-
-        # Priority 3: Empty (start new Dify conversation)
+        # Host conversation ids are LangBot-local and are not guaranteed to be
+        # Dify UUIDs. Passing them to Dify makes first-turn Debug Chat fail.
         return ""
 
     def _get_dify_inputs(self, ctx: AgentRunContext) -> dict[str, typing.Any]:
@@ -263,6 +311,36 @@ class DefaultAgentRunner(AgentRunner):
         Does NOT modify adapter params.
         """
         return _get_adapter_params(ctx)
+
+    def _create_asset_gateway_registration(
+        self,
+        ctx: AgentRunContext,
+        config: dict[str, typing.Any],
+    ):
+        gateway = get_default_agent_asset_gateway(
+            host=config["asset_gateway_host"],
+            port=config["asset_gateway_port"],
+            request_timeout=config["asset_gateway_request_timeout"],
+        )
+        return gateway.register_run(
+            self.get_run_api(ctx),
+            ctx,
+            ttl_seconds=config["asset_gateway_token_ttl"],
+        )
+
+    def _prepare_dify_inputs(
+        self,
+        ctx: AgentRunContext,
+        config: dict[str, typing.Any],
+    ):
+        inputs = self._get_dify_inputs(ctx)
+        if not config["langbot_assets_enabled"]:
+            return None, inputs
+
+        registration = self._create_asset_gateway_registration(ctx, config)
+        inputs = dict(inputs)
+        inputs[config["asset_gateway_input_name"]] = registration.token
+        return registration, inputs
 
     async def _upload_input_files(
         self,
@@ -351,15 +429,17 @@ class DefaultAgentRunner(AgentRunner):
         # Upload files if present
         files = await self._upload_input_files(ctx, client, user)
 
-        # Get inputs from params (read-only, do not modify)
-        inputs = self._get_dify_inputs(ctx)
-
-        # Get conversation_id from state (not from config!)
-        conversation_id = self._get_external_conversation_id(ctx)
-
-        app_type = config["app_type"]
-
+        asset_registration = None
         try:
+            # Get inputs from params (read-only, do not modify), optionally adding
+            # the run-scoped LangBot asset token expected by Dify MCP tools.
+            asset_registration, inputs = self._prepare_dify_inputs(ctx, config)
+
+            # Get conversation_id from state (not from config!)
+            conversation_id = self._get_external_conversation_id(ctx)
+
+            app_type = config["app_type"]
+
             if app_type == "workflow":
                 # Workflow mode - uses different endpoint
                 async for result in self._run_workflow(ctx, client, inputs, input_text, user, files, remove_think):
@@ -385,6 +465,9 @@ class DefaultAgentRunner(AgentRunner):
                 code="dify.unexpected_error",
             )
             return
+        finally:
+            if asset_registration is not None:
+                asset_registration.stop()
 
     async def _run_chat_or_agent(
         self,
