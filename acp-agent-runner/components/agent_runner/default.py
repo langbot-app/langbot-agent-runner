@@ -10,7 +10,10 @@ import time
 import typing
 import urllib.parse
 
-from langbot_plugin.api.agent_tools import AgentRunMCPBridge
+from langbot_plugin.api.agent_tools import (
+    AgentRunMCPBridge,
+    get_default_agent_asset_gateway,
+)
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
@@ -22,15 +25,30 @@ from pkg.acp_client import AcpError, AcpStdioClient
 logger = logging.getLogger(__name__)
 
 ACP_SESSION_STATE_KEY = "external.acp_session_id"
+# Common ACP agent launch presets from the public ACP registry and vendor docs.
+# Keep commands unpinned so the default follows the locally installed/current
+# CLI; set acp-command to pin a version or use a non-standard install path.
 DEFAULT_PROVIDER_COMMANDS = {
+    "auggie": "npx -y @augmentcode/auggie --acp",
+    "autohand": "npx -y @autohandai/autohand-acp",
     "claude-code": "npx -y @agentclientprotocol/claude-agent-acp",
-    "codex": "codex-acp",
+    "codebuddy-code": "npx -y @tencent-ai/codebuddy-code --acp",
+    "codex": "npx -y @zed-industries/codex-acp",
+    "deepagents": "npx -y deepagents-acp",
+    "dimcode": "npx -y dimcode acp",
+    "dirac": "npx -y dirac-cli --acp",
+    "factory-droid": "npx -y droid exec --output-format acp-daemon",
+    "gemini": "npx -y @google/gemini-cli --acp",
+    "glm-agent": "npx -y glm-acp-agent",
+    "kilo": "npx -y @kilocode/cli acp",
     "opencode": "opencode acp",
-    "gemini": "gemini --acp",
+    "pi-acp": "npx -y pi-acp",
+    "qwen-code": "npx -y @qwen-code/qwen-code --acp --experimental-skills",
 }
 SUPPORTED_PROVIDERS = set(DEFAULT_PROVIDER_COMMANDS) | {"custom"}
 SUPPORTED_LOCATIONS = {"local", "remote-ssh"}
 SUPPORTED_REMOTE_SHELLS = {"bash", "powershell", "none"}
+SUPPORTED_LANGBOT_ASSET_MODES = {"auto", "ephemeral", "gateway"}
 
 
 def _to_bool(value: typing.Any, default: bool = False) -> bool:
@@ -149,12 +167,13 @@ def _bridge_port(bridge: typing.Any) -> int:
 
 
 def _mcp_bridge_tool_names(ctx: AgentRunContext) -> list[str]:
-    tool_names = ["langbot_get_current_event"]
+    tool_names = ["langbot_get_current_event", "langbot_list_assets"]
     if ctx.context.available_apis.history_page:
         tool_names.append("langbot_history_page")
     if ctx.resources.knowledge_bases:
         tool_names.append("langbot_retrieve_knowledge")
     if ctx.resources.tools:
+        tool_names.append("langbot_get_tool_detail")
         tool_names.append("langbot_call_tool")
     return tool_names
 
@@ -329,6 +348,13 @@ class DefaultAgentRunner(AgentRunner):
                 code="acp.config_invalid",
             )
 
+        langbot_assets_mode = str(config.get("langbot-assets-mode", "auto") or "auto").strip()
+        if langbot_assets_mode not in SUPPORTED_LANGBOT_ASSET_MODES:
+            raise AcpError(
+                "langbot-assets-mode must be auto, ephemeral, or gateway",
+                code="acp.config_invalid",
+            )
+
         return {
             "provider": provider,
             "location": location,
@@ -361,6 +387,25 @@ class DefaultAgentRunner(AgentRunner):
             "mcp_bridge_transport": str(config.get("mcp-bridge-transport", "auto") or "auto").strip(),
             "mcp_public_url": str(config.get("mcp-public-url", "") or "").strip(),
             "mcp_servers": _parse_json_list(config.get("mcp-servers-json"), label="mcp-servers-json"),
+            "langbot_assets_mode": langbot_assets_mode,
+            "asset_gateway_host": str(
+                config.get("langbot-assets-gateway-host", config.get("mcp-bridge-host", "127.0.0.1"))
+                or "127.0.0.1"
+            ).strip(),
+            "asset_gateway_port": _to_int(
+                config.get("langbot-assets-gateway-port", config.get("mcp-bridge-port")),
+                0,
+            ),
+            "asset_gateway_request_timeout": _to_float(
+                config.get("langbot-assets-gateway-request-timeout", config.get("mcp-bridge-request-timeout")),
+                60.0,
+            ),
+            "asset_gateway_token_ttl": _to_float(config.get("langbot-assets-token-ttl"), 3600.0),
+            "asset_gateway_public_url": _first_config_value(
+                config,
+                "langbot-assets-gateway-public-url",
+                "mcp-public-url",
+            ),
         }
 
     def _input_text(self, ctx: AgentRunContext) -> str:
@@ -420,6 +465,22 @@ class DefaultAgentRunner(AgentRunner):
             request_timeout=config["mcp_bridge_request_timeout"],
         )
 
+    def _create_asset_gateway_registration(
+        self,
+        ctx: AgentRunContext,
+        config: dict[str, typing.Any],
+    ) -> typing.Any:
+        gateway = get_default_agent_asset_gateway(
+            host=config["asset_gateway_host"],
+            port=config["asset_gateway_port"],
+            request_timeout=config["asset_gateway_request_timeout"],
+        )
+        return gateway.register_run(
+            self.get_run_api(ctx),
+            ctx,
+            ttl_seconds=config["asset_gateway_token_ttl"],
+        )
+
     def _mcp_servers(
         self,
         ctx: AgentRunContext,
@@ -428,6 +489,24 @@ class DefaultAgentRunner(AgentRunner):
         servers = [server for server in config["mcp_servers"] if isinstance(server, dict)]
         if not config["mcp_bridge_enabled"]:
             return None, servers
+
+        assets_mode = config["langbot_assets_mode"]
+        if assets_mode == "auto":
+            assets_mode = "ephemeral"
+
+        if assets_mode == "gateway":
+            registration = self._create_asset_gateway_registration(ctx, config)
+            public_url = config["asset_gateway_public_url"]
+            if not public_url and config["location"] == "remote-ssh":
+                public_url = registration.http_mcp_endpoint
+            servers.append(
+                self._bridge_server_config(
+                    registration,
+                    transport="http",
+                    public_url=public_url,
+                )
+            )
+            return registration, servers
 
         transport = config["mcp_bridge_transport"]
         if transport == "auto":

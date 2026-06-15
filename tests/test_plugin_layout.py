@@ -92,6 +92,33 @@ def test_bridge_runners_declare_bridge_related_capabilities() -> None:
     assert dify_runner["spec"]["capabilities"]["knowledge_retrieval"] is True
 
 
+def test_acp_provider_presets_match_runner_config() -> None:
+    module = _load_runner_module("acp-agent-runner")
+    acp_runner = _load_yaml(ROOT / "acp-agent-runner" / "components" / "agent_runner" / "default.yaml")
+    provider_config = next(item for item in acp_runner["spec"]["config"] if item["name"] == "provider")
+    option_names = {option["name"] for option in provider_config["options"]}
+
+    assert option_names == set(module.DEFAULT_PROVIDER_COMMANDS) | {"custom"}
+    assert module.DEFAULT_PROVIDER_COMMANDS["codex"] == "npx -y @zed-industries/codex-acp"
+    assert module.DEFAULT_PROVIDER_COMMANDS["qwen-code"] == "npx -y @qwen-code/qwen-code --acp --experimental-skills"
+    assert module.DEFAULT_PROVIDER_COMMANDS["opencode"] == "opencode acp"
+    unsupported = {
+        "agoragentic",
+        "cline",
+        "cursor",
+        "deepcode",
+        "deepseek",
+        "github-copilot",
+        "goose",
+        "kimi",
+        "langcli",
+        "nova",
+        "qoder",
+        "sigit",
+    }
+    assert unsupported.isdisjoint(option_names)
+
+
 def test_acp_runner_uses_sdk_mcp_bridge_helper(monkeypatch) -> None:
     module = _load_runner_module("acp-agent-runner")
     calls = {}
@@ -136,6 +163,7 @@ def test_acp_runner_uses_sdk_mcp_bridge_helper(monkeypatch) -> None:
             "mcp_bridge_request_timeout": 15.0,
             "mcp_public_url": "",
             "location": "local",
+            "langbot_assets_mode": "ephemeral",
         },
     )
 
@@ -155,6 +183,81 @@ def test_acp_runner_uses_sdk_mcp_bridge_helper(monkeypatch) -> None:
             "command": "python",
             "args": ["-m", "langbot_plugin.api.agent_tools.mcp_stdio"],
             "env": [{"name": "LANGBOT_AGENT_MCP_ENDPOINT", "value": "http://127.0.0.1:12345"}],
+        }
+    ]
+
+
+def test_acp_runner_can_use_sdk_asset_gateway(monkeypatch) -> None:
+    module = _load_runner_module("acp-agent-runner")
+    calls = {}
+
+    class FakeRegistration:
+        server_name = "langbot_agent"
+        endpoint = "http://127.0.0.1:23456"
+        http_mcp_endpoint = "http://127.0.0.1:23456/mcp"
+
+        def http_mcp_server_config(self, *, public_url=None):
+            calls["public_url"] = public_url
+            return {
+                "name": self.server_name,
+                "url": public_url or self.http_mcp_endpoint,
+                "headers": {"Authorization": "Bearer token_1"},
+            }
+
+    class FakeGateway:
+        def register_run(self, api, ctx, *, ttl_seconds):
+            calls["api"] = api
+            calls["ctx"] = ctx
+            calls["ttl_seconds"] = ttl_seconds
+            return FakeRegistration()
+
+    def fake_default_gateway(*, host, port, request_timeout):
+        calls["host"] = host
+        calls["port"] = port
+        calls["request_timeout"] = request_timeout
+        return FakeGateway()
+
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_run_api = lambda ctx: "run-api"
+    ctx = object()
+
+    monkeypatch.setattr(module, "get_default_agent_asset_gateway", fake_default_gateway)
+    registration, servers = runner._mcp_servers(
+        ctx,
+        {
+            "mcp_servers": [],
+            "mcp_bridge_enabled": True,
+            "mcp_bridge_transport": "auto",
+            "mcp_bridge_host": "127.0.0.1",
+            "mcp_bridge_port": 0,
+            "mcp_bridge_request_timeout": 15.0,
+            "mcp_public_url": "",
+            "location": "local",
+            "langbot_assets_mode": "gateway",
+            "asset_gateway_host": "127.0.0.1",
+            "asset_gateway_port": 8765,
+            "asset_gateway_request_timeout": 12.0,
+            "asset_gateway_token_ttl": 120.0,
+            "asset_gateway_public_url": "http://gateway.example/mcp",
+        },
+    )
+
+    assert isinstance(registration, FakeRegistration)
+    assert calls == {
+        "host": "127.0.0.1",
+        "port": 8765,
+        "request_timeout": 12.0,
+        "api": "run-api",
+        "ctx": ctx,
+        "ttl_seconds": 120.0,
+        "public_url": "http://gateway.example/mcp",
+    }
+    assert servers == [
+        {
+            "name": "langbot_agent",
+            "type": "http",
+            "url": "http://gateway.example/mcp",
+            "headers": [{"name": "Authorization", "value": "Bearer token_1"}],
         }
     ]
 
@@ -272,8 +375,10 @@ def test_acp_resource_summary_includes_run_scoped_bridge_tools() -> None:
 
     assert module._resource_summary(ctx)["mcp_bridge_tools"] == [
         {"tool_name": "langbot_get_current_event"},
+        {"tool_name": "langbot_list_assets"},
         {"tool_name": "langbot_history_page"},
         {"tool_name": "langbot_retrieve_knowledge"},
+        {"tool_name": "langbot_get_tool_detail"},
         {"tool_name": "langbot_call_tool"},
     ]
 

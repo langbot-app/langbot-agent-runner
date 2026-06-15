@@ -21,22 +21,66 @@ spec:
       required: true
       default: claude-code
       options:
+        - name: auggie
+          label:
+            en_US: Auggie CLI
+            zh_Hans: Auggie CLI
+        - name: autohand
+          label:
+            en_US: Autohand Code
+            zh_Hans: Autohand Code
         - name: claude-code
           label:
             en_US: Claude Code
             zh_Hans: Claude Code
+        - name: codebuddy-code
+          label:
+            en_US: CodeBuddy Code
+            zh_Hans: CodeBuddy Code
         - name: codex
           label:
             en_US: Codex
             zh_Hans: Codex
-        - name: opencode
+        - name: deepagents
           label:
-            en_US: OpenCode
-            zh_Hans: OpenCode
+            en_US: DeepAgents
+            zh_Hans: DeepAgents
+        - name: dimcode
+          label:
+            en_US: DimCode
+            zh_Hans: DimCode
+        - name: dirac
+          label:
+            en_US: Dirac
+            zh_Hans: Dirac
+        - name: factory-droid
+          label:
+            en_US: Factory Droid
+            zh_Hans: Factory Droid
         - name: gemini
           label:
             en_US: Gemini
             zh_Hans: Gemini
+        - name: glm-agent
+          label:
+            en_US: GLM Agent
+            zh_Hans: GLM Agent
+        - name: kilo
+          label:
+            en_US: Kilo
+            zh_Hans: Kilo
+        - name: opencode
+          label:
+            en_US: OpenCode
+            zh_Hans: OpenCode
+        - name: pi-acp
+          label:
+            en_US: pi ACP
+            zh_Hans: pi ACP
+        - name: qwen-code
+          label:
+            en_US: Qwen Code
+            zh_Hans: Qwen Code
         - name: custom
           label:
             en_US: Custom ACP
@@ -133,6 +177,85 @@ spec:
       type: boolean
       required: false
       default: true
+    - name: langbot-assets-mode
+      label:
+        en_US: LangBot Asset Bridge Mode
+        zh_Hans: LangBot 资产桥接模式
+      description:
+        en_US: Use the existing per-run ephemeral bridge, or register this run in the long-lived HTTP MCP gateway.
+        zh_Hans: 使用现有单次运行临时 bridge，或把本次运行注册到长期 HTTP MCP gateway。
+      type: select
+      required: false
+      default: auto
+      options:
+        - name: auto
+          label:
+            en_US: Auto
+            zh_Hans: 自动
+        - name: ephemeral
+          label:
+            en_US: Ephemeral Bridge
+            zh_Hans: 临时 Bridge
+        - name: gateway
+          label:
+            en_US: Stable HTTP Gateway
+            zh_Hans: 稳定 HTTP Gateway
+    - name: langbot-assets-gateway-host
+      label:
+        en_US: Gateway Host
+        zh_Hans: Gateway 监听地址
+      description:
+        en_US: Host address for the long-lived LangBot asset gateway.
+        zh_Hans: 长期 LangBot 资产 Gateway 的监听地址。
+      type: string
+      required: false
+      default: 127.0.0.1
+      show_if:
+        field: langbot-assets-mode
+        operator: eq
+        value: gateway
+    - name: langbot-assets-gateway-port
+      label:
+        en_US: Gateway Port
+        zh_Hans: Gateway 端口
+      description:
+        en_US: Port for the long-lived LangBot asset gateway. Use 0 for an ephemeral local port, or set a fixed port for external MCP clients such as Dify.
+        zh_Hans: 长期 LangBot 资产 Gateway 端口。0 表示本机临时端口；如果要给 Dify 等外部 MCP client 使用，请设置固定端口。
+      type: integer
+      required: false
+      default: 0
+      show_if:
+        field: langbot-assets-mode
+        operator: eq
+        value: gateway
+    - name: langbot-assets-gateway-public-url
+      label:
+        en_US: Gateway Public MCP URL
+        zh_Hans: Gateway 公网 MCP URL
+      description:
+        en_US: Optional URL reachable by the ACP runtime or external MCP clients, for example https://example.com/mcp.
+        zh_Hans: 可选，ACP runtime 或外部 MCP client 可访问的 URL，例如 https://example.com/mcp。
+      type: string
+      required: false
+      default: ''
+      show_if:
+        field: langbot-assets-mode
+        operator: eq
+        value: gateway
+    - name: langbot-assets-token-ttl
+      label:
+        en_US: Run Token TTL Seconds
+        zh_Hans: Run Token 有效期秒数
+      description:
+        en_US: Short-lived run token TTL for registrations inside the long-lived gateway.
+        zh_Hans: 长期 Gateway 内单次运行注册 token 的有效期。
+      type: integer
+      required: false
+      default: 3600
+      show_if:
+        field: langbot-assets-mode
+        operator: eq
+        value: gateway
     - name: timeout
       label:
         en_US: Request Timeout
