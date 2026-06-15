@@ -10,6 +10,7 @@ import time
 import typing
 import urllib.parse
 
+from langbot_plugin.api.agent_tools import AgentRunMCPBridge
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
@@ -147,6 +148,17 @@ def _bridge_port(bridge: typing.Any) -> int:
     return parsed.port
 
 
+def _mcp_bridge_tool_names(ctx: AgentRunContext) -> list[str]:
+    tool_names = ["langbot_get_current_event"]
+    if ctx.context.available_apis.history_page:
+        tool_names.append("langbot_history_page")
+    if ctx.resources.knowledge_bases:
+        tool_names.append("langbot_retrieve_knowledge")
+    if ctx.resources.tools:
+        tool_names.append("langbot_call_tool")
+    return tool_names
+
+
 def _resource_summary(ctx: AgentRunContext) -> dict[str, typing.Any]:
     return {
         "knowledge_bases": [
@@ -165,6 +177,7 @@ def _resource_summary(ctx: AgentRunContext) -> dict[str, typing.Any]:
             }
             for item in ctx.resources.tools
         ],
+        "mcp_bridge_tools": [{"tool_name": name} for name in _mcp_bridge_tool_names(ctx)],
     }
 
 
@@ -361,7 +374,7 @@ class DefaultAgentRunner(AgentRunner):
             "- The injected LangBot MCP server is already scoped to this run. Follow its tool schemas exactly.\n"
             "- Do not add run_id or other fields to MCP tool calls unless the tool schema asks for them.\n"
             "- If a LangBot MCP call is rejected, stop and report the error.\n"
-            f"- Authorized LangBot resources for this run: {resources}\n\n"
+            f"- Authorized LangBot resources and MCP bridge tools for this run: {resources}\n\n"
             "User input:\n"
             f"{input_text}"
         )
@@ -394,6 +407,19 @@ class DefaultAgentRunner(AgentRunner):
             "env": _mcp_env_to_acp(config.get("env")),
         }
 
+    def _create_mcp_bridge(
+        self,
+        ctx: AgentRunContext,
+        config: dict[str, typing.Any],
+    ) -> AgentRunMCPBridge:
+        return AgentRunMCPBridge.from_run_api(
+            self.get_run_api(ctx),
+            ctx,
+            host=config["mcp_bridge_host"],
+            port=config["mcp_bridge_port"],
+            request_timeout=config["mcp_bridge_request_timeout"],
+        )
+
     def _mcp_servers(
         self,
         ctx: AgentRunContext,
@@ -409,12 +435,7 @@ class DefaultAgentRunner(AgentRunner):
         if transport not in {"stdio", "http"}:
             raise AcpError("mcp-bridge-transport must be auto, stdio, or http", code="acp.config_invalid")
 
-        bridge = self.create_external_mcp_bridge(
-            ctx,
-            host=config["mcp_bridge_host"],
-            port=config["mcp_bridge_port"],
-            request_timeout=config["mcp_bridge_request_timeout"],
-        )
+        bridge = self._create_mcp_bridge(ctx, config)
         bridge.start()
         public_url = config["mcp_public_url"]
         if not public_url and config["location"] == "remote-ssh" and transport == "http":

@@ -82,6 +82,115 @@ def test_bridge_runners_declare_bridge_related_capabilities() -> None:
     assert acp_runner["spec"]["capabilities"]["knowledge_retrieval"] is True
 
 
+def test_acp_runner_uses_sdk_mcp_bridge_helper(monkeypatch) -> None:
+    module = _load_runner_module("acp-agent-runner")
+    calls = {}
+
+    class FakeBridge:
+        server_name = "langbot_agent"
+        endpoint = "http://127.0.0.1:12345"
+        http_mcp_endpoint = "http://127.0.0.1:12345/mcp/http"
+
+        @classmethod
+        def from_run_api(cls, api, ctx, *, host, port, request_timeout):
+            calls["api"] = api
+            calls["ctx"] = ctx
+            calls["host"] = host
+            calls["port"] = port
+            calls["request_timeout"] = request_timeout
+            return cls()
+
+        def start(self):
+            calls["started"] = True
+
+        def mcp_server_config(self):
+            return {
+                "command": "python",
+                "args": ["-m", "langbot_plugin.api.agent_tools.mcp_stdio"],
+                "env": {"LANGBOT_AGENT_MCP_ENDPOINT": self.endpoint},
+            }
+
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_run_api = lambda ctx: "run-api"
+    ctx = object()
+
+    monkeypatch.setattr(module, "AgentRunMCPBridge", FakeBridge)
+    bridge, servers = runner._mcp_servers(
+        ctx,
+        {
+            "mcp_servers": [],
+            "mcp_bridge_enabled": True,
+            "mcp_bridge_transport": "stdio",
+            "mcp_bridge_host": "127.0.0.1",
+            "mcp_bridge_port": 0,
+            "mcp_bridge_request_timeout": 15.0,
+            "mcp_public_url": "",
+            "location": "local",
+        },
+    )
+
+    assert isinstance(bridge, FakeBridge)
+    assert calls == {
+        "api": "run-api",
+        "ctx": ctx,
+        "host": "127.0.0.1",
+        "port": 0,
+        "request_timeout": 15.0,
+        "started": True,
+    }
+    assert servers == [
+        {
+            "name": "langbot_agent",
+            "type": "stdio",
+            "command": "python",
+            "args": ["-m", "langbot_plugin.api.agent_tools.mcp_stdio"],
+            "env": [{"name": "LANGBOT_AGENT_MCP_ENDPOINT", "value": "http://127.0.0.1:12345"}],
+        }
+    ]
+
+
+def test_acp_resource_summary_includes_run_scoped_bridge_tools() -> None:
+    from langbot_plugin.api.entities.builtin.agent_runner import (
+        AgentEventContext,
+        AgentInput,
+        AgentResources,
+        AgentRunContext,
+        AgentRuntimeContext,
+        AgentTrigger,
+        ContextAccess,
+        ContextAPICapabilities,
+        DeliveryContext,
+    )
+
+    module = _load_runner_module("acp-agent-runner")
+    ctx = AgentRunContext(
+        run_id="run_1",
+        trigger=AgentTrigger(type="message.received"),
+        event=AgentEventContext(
+            event_id="event_1",
+            event_type="message.received",
+            source="host_adapter",
+        ),
+        input=AgentInput(text="hello"),
+        delivery=DeliveryContext(surface="webui"),
+        resources=AgentResources.model_validate(
+            {
+                "knowledge_bases": [{"kb_id": "kb_1", "kb_name": "Docs"}],
+                "tools": [{"tool_name": "weather", "description": "lookup weather"}],
+            }
+        ),
+        context=ContextAccess(available_apis=ContextAPICapabilities(history_page=True)),
+        runtime=AgentRuntimeContext(),
+    )
+
+    assert module._resource_summary(ctx)["mcp_bridge_tools"] == [
+        {"tool_name": "langbot_get_current_event"},
+        {"tool_name": "langbot_history_page"},
+        {"tool_name": "langbot_retrieve_knowledge"},
+        {"tool_name": "langbot_call_tool"},
+    ]
+
+
 def test_external_service_runners_declare_minimal_plugin_storage_permission() -> None:
     for plugin_dir in PLUGIN_DIRS - {"acp-agent-runner"}:
         runner = _load_yaml(ROOT / plugin_dir / "components" / "agent_runner" / "default.yaml")
