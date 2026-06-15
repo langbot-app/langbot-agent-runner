@@ -386,7 +386,7 @@ spec:
     streaming: true
     tool_calling: true
     knowledge_retrieval: true
-    multimodal_input: false
+    multimodal_input: true
     interrupt: false
   permissions:
     tools:

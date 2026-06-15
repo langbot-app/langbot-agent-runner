@@ -84,6 +84,7 @@ def test_bridge_runners_declare_bridge_related_capabilities() -> None:
     }
     assert acp_runner["spec"]["capabilities"]["tool_calling"] is True
     assert acp_runner["spec"]["capabilities"]["knowledge_retrieval"] is True
+    assert acp_runner["spec"]["capabilities"]["multimodal_input"] is True
 
     dify_runner = _load_yaml(ROOT / "dify-agent" / "components" / "agent_runner" / "default.yaml")
     assert dify_runner["spec"]["permissions"] == {
@@ -121,6 +122,99 @@ def test_acp_provider_presets_match_runner_config() -> None:
         "sigit",
     }
     assert unsupported.isdisjoint(option_names)
+
+
+def test_acp_prompt_blocks_include_runtime_supported_image_data() -> None:
+    module = _load_plugin_module("acp-agent-runner", "pkg/prompt.py", "prompt")
+
+    blocks = module.acp_prompt_blocks(
+        "Describe the image.",
+        {
+            "attachments": [
+                {
+                    "artifact_type": "image",
+                    "content": "data:image/png;base64,aGVsbG8=",
+                }
+            ]
+        },
+        {"image": True, "audio": False, "embedded_context": False},
+    )
+
+    assert blocks == [
+        {"type": "text", "text": "Describe the image."},
+        {"type": "image", "mimeType": "image/png", "data": "aGVsbG8="},
+    ]
+
+
+def test_acp_prompt_blocks_use_resource_link_for_url_images_without_image_capability() -> None:
+    module = _load_plugin_module("acp-agent-runner", "pkg/prompt.py", "prompt")
+
+    blocks = module.acp_prompt_blocks(
+        "Check the attachment.",
+        {
+            "contents": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "https://example.com/a.png"},
+                }
+            ]
+        },
+        {"image": False, "audio": False, "embedded_context": False},
+    )
+
+    assert blocks == [
+        {"type": "text", "text": "Check the attachment."},
+        {
+            "type": "resource_link",
+            "uri": "https://example.com/a.png",
+            "name": "image",
+            "mimeType": "image/png",
+        },
+    ]
+
+
+def test_acp_prompt_blocks_embed_text_file_when_runtime_supports_embedded_context() -> None:
+    module = _load_plugin_module("acp-agent-runner", "pkg/prompt.py", "prompt")
+
+    blocks = module.acp_prompt_blocks(
+        "Read the file.",
+        {
+            "contents": [
+                {
+                    "type": "file_base64",
+                    "file_base64": "data:text/plain;base64,aGk=",
+                    "file_name": "hello.txt",
+                }
+            ]
+        },
+        {"image": False, "audio": False, "embedded_context": True},
+    )
+
+    assert blocks == [
+        {"type": "text", "text": "Read the file."},
+        {
+            "type": "resource",
+            "resource": {
+                "uri": "langbot-input://hello.txt",
+                "mimeType": "text/plain",
+                "text": "hi",
+            },
+        },
+    ]
+
+
+def test_acp_prompt_blocks_note_unsupported_inline_image() -> None:
+    module = _load_plugin_module("acp-agent-runner", "pkg/prompt.py", "prompt")
+
+    blocks = module.acp_prompt_blocks(
+        "",
+        {"attachments": [{"artifact_type": "image", "content": "data:image/png;base64,aGVsbG8="}]},
+        {"image": False, "audio": False, "embedded_context": False},
+    )
+
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "text"
+    assert "image attachment(s) were not sent" in blocks[0]["text"]
 
 
 def test_acp_runner_declares_daemon_location() -> None:

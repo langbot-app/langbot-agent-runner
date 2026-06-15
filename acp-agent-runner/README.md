@@ -9,6 +9,7 @@ It is a thin runtime adapter:
 - In daemon mode, a user-side `langbot-runner-daemon` connects outward to the plugin and starts the ACP process on the user's machine.
 - The plugin speaks ACP JSON-RPC: `initialize`, `session/new`, `session/load` or `session/resume`, and `session/prompt`.
 - ACP `session/update` text chunks are streamed back to LangBot.
+- LangBot multimodal input is mapped to ACP prompt content blocks when the selected ACP runtime advertises the matching prompt capability.
 - LangBot tools, knowledge bases, and history are exposed through the SDK-owned run-scoped MCP bridge.
 
 ## Configuration
@@ -121,6 +122,24 @@ Useful options:
 
 Headless ACP permission requests are answered with `allow_once` by default.
 LangBot does not yet expose an interactive approval UI for these requests.
+
+## Multimodal Input
+
+The runner accepts LangBot structured input and attachments. It maps them to ACP
+`session/prompt` content blocks according to the selected runtime's
+`agentCapabilities.promptCapabilities`:
+
+- inline image base64/data URLs are sent as ACP `image` blocks only when the
+  runtime advertises image prompt support;
+- inline file base64/data URLs are sent as embedded ACP `resource` blocks only
+  when the runtime advertises embedded context support;
+- URL-backed images or files are sent as ACP `resource_link` blocks;
+- unsupported inline attachments are not silently dropped; the prompt receives a
+  short attachment note explaining which content was not sent.
+
+Provider support still depends on the ACP executable being launched. A runtime
+that does not advertise image prompt support can still handle normal text input
+and URL resource links, but it will not receive inline image bytes.
 
 Built-in provider commands are intentionally unpinned and assume the selected
 runtime can run on the target machine. Built-in presets must support ACP session

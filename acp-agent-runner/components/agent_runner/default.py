@@ -23,6 +23,7 @@ from langbot_plugin.api.entities.builtin.agent_runner import (
 from langbot_plugin.api.entities.builtin.provider.message import Message, MessageChunk
 from pkg.acp_client import AcpError, AcpStdioClient
 from pkg.daemon_hub import DaemonHubError, daemon_hub_config_from_plugin_config, get_daemon_hub
+from pkg.prompt import acp_prompt_blocks, has_acp_prompt_input, prompt_capabilities
 
 logger = logging.getLogger(__name__)
 
@@ -640,7 +641,7 @@ class DefaultAgentRunner(AgentRunner):
         client: AcpStdioClient,
         ctx: AgentRunContext,
         session_id: str,
-        prompt_text: str,
+        prompt_blocks: list[dict[str, typing.Any]],
         *,
         timeout: float,
         streaming: bool,
@@ -649,12 +650,7 @@ class DefaultAgentRunner(AgentRunner):
             "session/prompt",
             {
                 "sessionId": session_id,
-                "prompt": [
-                    {
-                        "type": "text",
-                        "text": prompt_text,
-                    }
-                ],
+                "prompt": prompt_blocks,
             },
         )
 
@@ -729,6 +725,7 @@ class DefaultAgentRunner(AgentRunner):
         return {
             "run_id": ctx.run_id,
             "prompt_text": prompt_text,
+            "input": ctx.input.model_dump(mode="json") if hasattr(ctx.input, "model_dump") else {},
             "input_text": self._input_text(ctx),
             "config": {
                 "provider": config["provider"],
@@ -785,7 +782,7 @@ class DefaultAgentRunner(AgentRunner):
             return
 
         input_text = self._input_text(ctx)
-        if not input_text:
+        if not has_acp_prompt_input(input_text, ctx.input):
             yield AgentRunResult.run_failed(ctx.run_id, error="input text is required", code="acp.empty_input")
             return
 
@@ -833,11 +830,12 @@ class DefaultAgentRunner(AgentRunner):
                         scope="conversation",
                     )
 
+                prompt_blocks = acp_prompt_blocks(prompt_text, ctx.input, prompt_capabilities(initialize_result))
                 async for result in self._stream_prompt_results(
                     client,
                     ctx,
                     session_id,
-                    prompt_text,
+                    prompt_blocks,
                     timeout=config["timeout"],
                     streaming=config["streaming"],
                 ):

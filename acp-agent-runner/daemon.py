@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import websockets
 from pkg.acp_client import AcpError, AcpStdioClient
+from pkg.prompt import acp_prompt_blocks, has_acp_prompt_input, prompt_capabilities
 
 logger = logging.getLogger("langbot-acp-daemon")
 
@@ -350,7 +351,8 @@ class RunnerDaemon:
         try:
             config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
             prompt_text = str(payload.get("prompt_text") or "")
-            if not prompt_text:
+            input_data = payload.get("input") if isinstance(payload.get("input"), dict) else {}
+            if not has_acp_prompt_input(prompt_text, input_data):
                 raise AcpError("prompt_text is required", code="acp.daemon_empty_prompt")
 
             command_args = _parse_args(config.get("acp_command"))
@@ -388,7 +390,8 @@ class RunnerDaemon:
                             },
                         ),
                     )
-                await self._stream_prompt_results(client, job_id, session_id, prompt_text, config)
+                prompt_blocks = acp_prompt_blocks(prompt_text, input_data, prompt_capabilities(initialize_result))
+                await self._stream_prompt_results(client, job_id, session_id, prompt_blocks, config)
         except asyncio.CancelledError:
             await self._emit(
                 job_id,
@@ -469,12 +472,12 @@ class RunnerDaemon:
         client: AcpStdioClient,
         job_id: str,
         session_id: str,
-        prompt_text: str,
+        prompt_blocks: list[dict[str, typing.Any]],
         config: dict[str, typing.Any],
     ) -> None:
         prompt_request = client.send_request(
             "session/prompt",
-            {"sessionId": session_id, "prompt": [{"type": "text", "text": prompt_text}]},
+            {"sessionId": session_id, "prompt": prompt_blocks},
         )
         sequence = 0
         final_text_parts: list[str] = []
