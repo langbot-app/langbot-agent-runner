@@ -81,6 +81,16 @@ def test_bridge_runners_declare_bridge_related_capabilities() -> None:
     assert acp_runner["spec"]["capabilities"]["tool_calling"] is True
     assert acp_runner["spec"]["capabilities"]["knowledge_retrieval"] is True
 
+    dify_runner = _load_yaml(ROOT / "dify-agent" / "components" / "agent_runner" / "default.yaml")
+    assert dify_runner["spec"]["permissions"] == {
+        "tools": ["detail", "call"],
+        "knowledge_bases": ["retrieve"],
+        "history": ["page"],
+        "storage": ["plugin"],
+    }
+    assert dify_runner["spec"]["capabilities"]["tool_calling"] is True
+    assert dify_runner["spec"]["capabilities"]["knowledge_retrieval"] is True
+
 
 def test_acp_runner_uses_sdk_mcp_bridge_helper(monkeypatch) -> None:
     module = _load_runner_module("acp-agent-runner")
@@ -149,6 +159,83 @@ def test_acp_runner_uses_sdk_mcp_bridge_helper(monkeypatch) -> None:
     ]
 
 
+def test_dify_runner_injects_langbot_asset_run_token(monkeypatch) -> None:
+    module = _load_runner_module("dify-agent")
+    calls = {}
+
+    class FakeRegistration:
+        token = "token_1"
+
+        def stop(self):
+            calls["stopped"] = True
+
+    class FakeGateway:
+        def register_run(self, api, ctx, *, ttl_seconds):
+            calls["api"] = api
+            calls["ctx"] = ctx
+            calls["ttl_seconds"] = ttl_seconds
+            return FakeRegistration()
+
+    def fake_default_gateway(*, host, port, request_timeout):
+        calls["host"] = host
+        calls["port"] = port
+        calls["request_timeout"] = request_timeout
+        return FakeGateway()
+
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_run_api = lambda ctx: "run-api"
+    ctx = types.SimpleNamespace(adapter=types.SimpleNamespace(extra={"params": {"existing": "value"}}))
+
+    monkeypatch.setattr(module, "get_default_agent_asset_gateway", fake_default_gateway)
+    registration, inputs = runner._prepare_dify_inputs(
+        ctx,
+        {
+            "langbot_assets_enabled": True,
+            "asset_gateway_host": "0.0.0.0",
+            "asset_gateway_port": 8765,
+            "asset_gateway_request_timeout": 12.0,
+            "asset_gateway_token_ttl": 120.0,
+            "asset_gateway_input_name": "langbot_asset_run_token",
+        },
+    )
+
+    assert isinstance(registration, FakeRegistration)
+    assert inputs == {"existing": "value", "langbot_asset_run_token": "token_1"}
+    assert ctx.adapter.extra == {"params": {"existing": "value"}}
+    assert calls == {
+        "host": "0.0.0.0",
+        "port": 8765,
+        "request_timeout": 12.0,
+        "api": "run-api",
+        "ctx": ctx,
+        "ttl_seconds": 120.0,
+    }
+
+    registration.stop()
+    assert calls["stopped"] is True
+
+
+def test_dify_runner_only_reuses_dify_uuid_conversation_id() -> None:
+    module = _load_runner_module("dify-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+
+    ctx = types.SimpleNamespace(
+        state=types.SimpleNamespace(
+            conversation={
+                "external.conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+            },
+        ),
+        conversation=types.SimpleNamespace(conversation_id="person_websocket_local_session"),
+    )
+    assert runner._get_external_conversation_id(ctx) == "550e8400-e29b-41d4-a716-446655440000"
+
+    ctx.state.conversation = {}
+    assert runner._get_external_conversation_id(ctx) == ""
+
+    ctx.state.conversation = {"external.conversation_id": "person_websocket_local_session"}
+    assert runner._get_external_conversation_id(ctx) == ""
+
+
 def test_acp_resource_summary_includes_run_scoped_bridge_tools() -> None:
     from langbot_plugin.api.entities.builtin.agent_runner import (
         AgentEventContext,
@@ -192,7 +279,7 @@ def test_acp_resource_summary_includes_run_scoped_bridge_tools() -> None:
 
 
 def test_external_service_runners_declare_minimal_plugin_storage_permission() -> None:
-    for plugin_dir in PLUGIN_DIRS - {"acp-agent-runner"}:
+    for plugin_dir in PLUGIN_DIRS - {"acp-agent-runner", "dify-agent"}:
         runner = _load_yaml(ROOT / plugin_dir / "components" / "agent_runner" / "default.yaml")
         assert runner["spec"]["permissions"] == {"storage": ["plugin"]}
 
