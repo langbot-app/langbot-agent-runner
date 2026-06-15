@@ -64,6 +64,7 @@ venv.bak/
 .vscode/
 *.swp
 *.swo
+.ipynb_checkpoints/
 
 # Ruff
 .ruff_cache/

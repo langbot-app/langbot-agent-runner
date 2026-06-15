@@ -3,7 +3,7 @@ kind: Plugin
 metadata:
   author: langbot
   name: acp-agent-runner
-  version: 0.1.2
+  version: 0.1.3
   label:
     en_US: ACP Agent Runner
     zh_Hans: ACP Agent Runner
@@ -12,7 +12,7 @@ metadata:
     zh_Hans: 将任意兼容 Agent Client Protocol 的编码智能体作为 LangBot AgentRunner 运行。
   icon: assets/icon.svg
 spec:
-  version: 0.1.2
+  version: 0.1.3
   config:
     - name: daemon-enabled
       label:
