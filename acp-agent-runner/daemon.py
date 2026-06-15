@@ -142,7 +142,7 @@ class LocalMCPProxy:
         proxy = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, format: str, *args: typing.Any) -> None:
+            def log_message(self, _format: str, *_args: typing.Any) -> None:
                 return
 
             def do_GET(self) -> None:

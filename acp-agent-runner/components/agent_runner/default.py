@@ -52,6 +52,14 @@ SUPPORTED_PROVIDERS = set(DEFAULT_PROVIDER_COMMANDS) | {"custom"}
 SUPPORTED_LOCATIONS = {"local", "remote-ssh", "daemon"}
 SUPPORTED_REMOTE_SHELLS = {"bash", "powershell", "none"}
 SUPPORTED_LANGBOT_ASSET_MODES = {"auto", "ephemeral", "gateway"}
+ACP_COMMAND_CONFIG_KEYS = ("acp-command", "remote-command", "local-command")
+WORKSPACE_CONFIG_KEYS = ("workspace",)
+REMOTE_WORKSPACE_CONFIG_KEYS = ("remote-workspace", "session-cwd")
+LOCAL_WORKSPACE_CONFIG_KEYS = ("local-workspace", "cwd", "session-cwd")
+SSH_TARGET_CONFIG_KEYS = ("ssh-target", "ssh_target")
+DAEMON_ID_CONFIG_KEYS = ("daemon-id", "daemon_id")
+SSH_IDENTITY_FILE_CONFIG_KEYS = ("ssh-identity-file", "ssh-key-file")
+ASSET_GATEWAY_PUBLIC_URL_CONFIG_KEYS = ("langbot-assets-gateway-public-url", "mcp-public-url")
 
 
 def _to_bool(value: typing.Any, default: bool = False) -> bool:
@@ -119,7 +127,7 @@ def _parse_json_list(value: typing.Any, *, label: str) -> list[typing.Any]:
     return parsed
 
 
-def _first_config_value(config: dict[str, typing.Any], *keys: str) -> str:
+def _first_config_value(config: dict[str, typing.Any], keys: tuple[str, ...]) -> str:
     for key in keys:
         value = config.get(key)
         if value not in (None, ""):
@@ -127,8 +135,8 @@ def _first_config_value(config: dict[str, typing.Any], *keys: str) -> str:
     return ""
 
 
-def _shell_command(command: str, args: list[str]) -> str:
-    parts = [command, *args]
+def _shell_command(command: str, command_args: typing.Sequence[str]) -> str:
+    parts = (command, *command_args)
     return " ".join(shlex.quote(part) for part in parts if part)
 
 
@@ -316,7 +324,7 @@ class DefaultAgentRunner(AgentRunner):
 
         command = str(config.get("command", "") or "").strip()
         command_args = _parse_args(config.get("args"))
-        acp_command = _first_config_value(config, "acp-command", "remote-command", "local-command")
+        acp_command = _first_config_value(config, ACP_COMMAND_CONFIG_KEYS)
         if not acp_command and command:
             acp_command = _shell_command(command, command_args)
         if not acp_command:
@@ -324,20 +332,20 @@ class DefaultAgentRunner(AgentRunner):
         if not acp_command:
             raise AcpError("acp-command is required when provider=custom", code="acp.config_invalid")
 
-        workspace = _first_config_value(config, "workspace")
+        workspace = _first_config_value(config, WORKSPACE_CONFIG_KEYS)
         if not workspace:
             if location == "remote-ssh":
-                workspace = _first_config_value(config, "remote-workspace", "session-cwd")
+                workspace = _first_config_value(config, REMOTE_WORKSPACE_CONFIG_KEYS)
             else:
-                workspace = _first_config_value(config, "local-workspace", "cwd", "session-cwd") or os.getcwd()
+                workspace = _first_config_value(config, LOCAL_WORKSPACE_CONFIG_KEYS) or os.getcwd()
         if location == "remote-ssh" and not workspace:
             raise AcpError("workspace is required when location=remote-ssh", code="acp.config_invalid")
 
-        ssh_target = _first_config_value(config, "ssh-target", "ssh_target")
+        ssh_target = _first_config_value(config, SSH_TARGET_CONFIG_KEYS)
         if location == "remote-ssh" and not ssh_target:
             raise AcpError("ssh-target is required when location=remote-ssh", code="acp.config_invalid")
 
-        daemon_id = _first_config_value(config, "daemon-id", "daemon_id")
+        daemon_id = _first_config_value(config, DAEMON_ID_CONFIG_KEYS)
         if location == "daemon" and not daemon_id:
             raise AcpError("daemon-id is required when location=daemon", code="acp.config_invalid")
 
@@ -372,7 +380,7 @@ class DefaultAgentRunner(AgentRunner):
             "env": {str(k): str(v) for k, v in _parse_json_object(config.get("env-json"), label="env-json").items()},
             "ssh_target": ssh_target,
             "ssh_port": _to_int(config.get("ssh-port"), 22),
-            "ssh_identity_file": _first_config_value(config, "ssh-identity-file", "ssh-key-file"),
+            "ssh_identity_file": _first_config_value(config, SSH_IDENTITY_FILE_CONFIG_KEYS),
             "ssh_connect_timeout": _to_int(config.get("ssh-connect-timeout"), 10),
             "ssh_extra_options": _parse_args(config.get("ssh-extra-options")),
             "daemon_id": daemon_id,
@@ -410,11 +418,7 @@ class DefaultAgentRunner(AgentRunner):
                 60.0,
             ),
             "asset_gateway_token_ttl": _to_float(config.get("langbot-assets-token-ttl"), 3600.0),
-            "asset_gateway_public_url": _first_config_value(
-                config,
-                "langbot-assets-gateway-public-url",
-                "mcp-public-url",
-            ),
+            "asset_gateway_public_url": _first_config_value(config, ASSET_GATEWAY_PUBLIC_URL_CONFIG_KEYS),
             "daemon_hub": daemon_hub_config_from_plugin_config(self.get_plugin_config()),
         }
 
