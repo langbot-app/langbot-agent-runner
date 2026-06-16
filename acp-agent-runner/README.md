@@ -6,8 +6,10 @@ It is a thin runtime adapter:
 
 - LangBot remains the control plane.
 - The plugin starts an ACP server over stdio, such as `npx -y @zed-industries/codex-acp`, `npx -y @agentclientprotocol/claude-agent-acp`, `opencode acp`, or `npx -y @google/gemini-cli --acp`.
+- In daemon mode, a user-side `langbot-runner-daemon` connects outward to the plugin and starts the ACP process on the user's machine.
 - The plugin speaks ACP JSON-RPC: `initialize`, `session/new`, `session/load` or `session/resume`, and `session/prompt`.
 - ACP `session/update` text chunks are streamed back to LangBot.
+- LangBot multimodal input is mapped to ACP prompt content blocks when the selected ACP runtime advertises the matching prompt capability.
 - LangBot tools, knowledge bases, and history are exposed through the SDK-owned run-scoped MCP bridge.
 
 ## Configuration
@@ -33,6 +35,33 @@ provider = custom
 location = local
 workspace = /path/to/workspace
 acp-command = opencode acp
+```
+
+For a user workstation behind NAT, enable the plugin daemon hub and run the user-side daemon:
+
+```text
+# Plugin config
+daemon-enabled = true
+daemon-host = 0.0.0.0
+daemon-port = 8766
+daemon-token = <shared-token>
+```
+
+```bash
+cd acp-agent-runner
+python daemon.py \
+  --url ws://<langbot-public-host>:8766 \
+  --daemon-id alice-laptop \
+  --token <shared-token>
+```
+
+Then configure the runner:
+
+```text
+provider = codex
+location = daemon
+daemon-id = alice-laptop
+workspace = /Users/alice/project
 ```
 
 Custom mode is for ACP stdio commands that are not built in, or for users who
@@ -76,11 +105,13 @@ reuse-session = false
 Useful options:
 
 - `provider`: built-in ACP launch preset. Current presets are limited to ACP runtimes that advertise `loadSession` or `sessionCapabilities.resume` and have no known public cross-process resume blocker. Use `custom` for anything else.
-- `location`: `local` or `remote-ssh`.
-- `workspace`: agent workspace directory. In `remote-ssh` mode this path is on the remote machine.
+- `location`: `local`, `remote-ssh`, or `daemon`.
+- `workspace`: agent workspace directory. In `remote-ssh` and `daemon` modes this path is on the remote/user machine.
 - `ssh-target`: SSH target for `remote-ssh`, for example `yhh@101.34.71.12`.
 - `ssh-port`: SSH port. Defaults to `22`.
 - `ssh-identity-file`: optional private key path on the LangBot host.
+- `daemon-id`: stable ID of a connected user-side runner daemon for `location=daemon`.
+- `daemon-connect-timeout`: seconds to wait for the selected daemon to come online.
 - `acp-command`: optional command override. Required only for `provider=custom`.
 - `env-json`: JSON object merged into the process environment.
 - `reuse-session`: persists and reuses `external.acp_session_id` when the ACP agent supports `session/resume` or `session/load`.
@@ -91,6 +122,24 @@ Useful options:
 
 Headless ACP permission requests are answered with `allow_once` by default.
 LangBot does not yet expose an interactive approval UI for these requests.
+
+## Multimodal Input
+
+The runner accepts LangBot structured input and attachments. It maps them to ACP
+`session/prompt` content blocks according to the selected runtime's
+`agentCapabilities.promptCapabilities`:
+
+- inline image base64/data URLs are sent as ACP `image` blocks only when the
+  runtime advertises image prompt support;
+- inline file base64/data URLs are sent as embedded ACP `resource` blocks only
+  when the runtime advertises embedded context support;
+- URL-backed images or files are sent as ACP `resource_link` blocks;
+- unsupported inline attachments are not silently dropped; the prompt receives a
+  short attachment note explaining which content was not sent.
+
+Provider support still depends on the ACP executable being launched. A runtime
+that does not advertise image prompt support can still handle normal text input
+and URL resource links, but it will not receive inline image bytes.
 
 Built-in provider commands are intentionally unpinned and assume the selected
 runtime can run on the target machine. Built-in presets must support ACP session
@@ -192,6 +241,14 @@ remote host, or disable LangBot asset injection with `langbot-assets-enabled=fal
 By default the plugin starts a temporary run-scoped MCP bridge for each run. The
 bridge URL and token are injected into ACP `mcpServers`, and the bridge is
 stopped when the run finishes.
+
+In `location=daemon`, the ACP process does not call the plugin's MCP bridge
+directly. The user-side daemon starts a localhost HTTP MCP proxy, injects that
+local URL into ACP, then forwards MCP JSON-RPC requests over the already-open
+WebSocket connection back to the plugin. The plugin handles those requests with
+the current run's `AgentRunAPIProxy`, so LangBot assets remain scoped by
+`run_id` and the Host authorization snapshot. The user's workstation does not
+need a public IP or inbound port for this path.
 
 To test the long-lived HTTP MCP gateway path with ACP, set:
 

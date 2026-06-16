@@ -40,6 +40,10 @@ def _load_yaml(path: Path) -> dict:
 
 
 def _load_runner_module(plugin_dir: str):
+    return _load_plugin_module(plugin_dir, "components/agent_runner/default.py", "runner")
+
+
+def _load_plugin_module(plugin_dir: str, relative_path: str, suffix: str):
     for module_name in list(sys.modules):
         if module_name == "pkg" or module_name.startswith("pkg."):
             del sys.modules[module_name]
@@ -47,8 +51,8 @@ def _load_runner_module(plugin_dir: str):
     plugin_root = ROOT / plugin_dir
     sys.path.insert(0, str(plugin_root))
     try:
-        module_path = plugin_root / "components" / "agent_runner" / "default.py"
-        spec = importlib.util.spec_from_file_location(f"test_{plugin_dir.replace('-', '_')}_runner", module_path)
+        module_path = plugin_root / relative_path
+        spec = importlib.util.spec_from_file_location(f"test_{plugin_dir.replace('-', '_')}_{suffix}", module_path)
         module = importlib.util.module_from_spec(spec)
         assert spec and spec.loader
         spec.loader.exec_module(module)
@@ -92,6 +96,7 @@ def test_bridge_runners_declare_bridge_related_capabilities() -> None:
     }
     assert acp_runner["spec"]["capabilities"]["tool_calling"] is True
     assert acp_runner["spec"]["capabilities"]["knowledge_retrieval"] is True
+    assert acp_runner["spec"]["capabilities"]["multimodal_input"] is True
 
     dify_runner = _load_yaml(ROOT / "dify-agent" / "components" / "agent_runner" / "default.yaml")
     assert dify_runner["spec"]["permissions"] == {
@@ -131,40 +136,245 @@ def test_acp_provider_presets_match_runner_config() -> None:
     assert unsupported.isdisjoint(option_names)
 
 
+def test_acp_prompt_blocks_include_runtime_supported_image_data() -> None:
+    module = _load_plugin_module("acp-agent-runner", "pkg/prompt.py", "prompt")
+
+    blocks = module.acp_prompt_blocks(
+        "Describe the image.",
+        {
+            "attachments": [
+                {
+                    "artifact_type": "image",
+                    "content": "data:image/png;base64,aGVsbG8=",
+                }
+            ]
+        },
+        {"image": True, "audio": False, "embedded_context": False},
+    )
+
+    assert blocks == [
+        {"type": "text", "text": "Describe the image."},
+        {"type": "image", "mimeType": "image/png", "data": "aGVsbG8="},
+    ]
+
+
+def test_acp_prompt_blocks_use_resource_link_for_url_images_without_image_capability() -> None:
+    module = _load_plugin_module("acp-agent-runner", "pkg/prompt.py", "prompt")
+
+    blocks = module.acp_prompt_blocks(
+        "Check the attachment.",
+        {
+            "contents": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "https://example.com/a.png"},
+                }
+            ]
+        },
+        {"image": False, "audio": False, "embedded_context": False},
+    )
+
+    assert blocks == [
+        {"type": "text", "text": "Check the attachment."},
+        {
+            "type": "resource_link",
+            "uri": "https://example.com/a.png",
+            "name": "image",
+            "mimeType": "image/png",
+        },
+    ]
+
+
+def test_acp_prompt_blocks_embed_text_file_when_runtime_supports_embedded_context() -> None:
+    module = _load_plugin_module("acp-agent-runner", "pkg/prompt.py", "prompt")
+
+    blocks = module.acp_prompt_blocks(
+        "Read the file.",
+        {
+            "contents": [
+                {
+                    "type": "file_base64",
+                    "file_base64": "data:text/plain;base64,aGk=",
+                    "file_name": "hello.txt",
+                }
+            ]
+        },
+        {"image": False, "audio": False, "embedded_context": True},
+    )
+
+    assert blocks == [
+        {"type": "text", "text": "Read the file."},
+        {
+            "type": "resource",
+            "resource": {
+                "uri": "langbot-input://hello.txt",
+                "mimeType": "text/plain",
+                "text": "hi",
+            },
+        },
+    ]
+
+
+def test_acp_prompt_blocks_note_unsupported_inline_image() -> None:
+    module = _load_plugin_module("acp-agent-runner", "pkg/prompt.py", "prompt")
+
+    blocks = module.acp_prompt_blocks(
+        "",
+        {"attachments": [{"artifact_type": "image", "content": "data:image/png;base64,aGVsbG8="}]},
+        {"image": False, "audio": False, "embedded_context": False},
+    )
+
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "text"
+    assert "image attachment(s) were not sent" in blocks[0]["text"]
+
+
+def test_acp_runner_declares_daemon_location() -> None:
+    acp_manifest = _load_yaml(ROOT / "acp-agent-runner" / "manifest.yaml")
+    plugin_config_names = {item["name"] for item in acp_manifest["spec"]["config"]}
+    assert {"daemon-enabled", "daemon-host", "daemon-port", "daemon-token"} <= plugin_config_names
+
+    acp_runner = _load_yaml(ROOT / "acp-agent-runner" / "components" / "agent_runner" / "default.yaml")
+    location_config = next(item for item in acp_runner["spec"]["config"] if item["name"] == "location")
+    assert {option["name"] for option in location_config["options"]} == {"local", "remote-ssh", "daemon"}
+    assert any(item["name"] == "daemon-id" for item in acp_runner["spec"]["config"])
+
+
+def test_acp_runner_validates_daemon_location_config() -> None:
+    module = _load_runner_module("acp-agent-runner")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {
+        "daemon-host": "0.0.0.0",
+        "daemon-port": 18766,
+        "daemon-token": "secret",
+    }
+
+    ctx = types.SimpleNamespace(
+        config={
+            "provider": "codex",
+            "location": "daemon",
+            "daemon-id": "alice-laptop",
+            "workspace": "/tmp/project",
+        }
+    )
+    config = runner._validate_config(ctx)
+
+    assert config["location"] == "daemon"
+    assert config["daemon_id"] == "alice-laptop"
+    assert config["daemon_hub"] == {
+        "enabled": False,
+        "host": "0.0.0.0",
+        "port": 18766,
+        "token": "secret",
+    }
+
+    ctx.config["daemon-id"] = ""
+    try:
+        runner._validate_config(ctx)
+    except module.AcpError as exc:
+        assert exc.code == "acp.config_invalid"
+        assert "daemon-id is required" in exc.message
+    else:
+        raise AssertionError("daemon-id should be required when location=daemon")
+
+
+def test_acp_daemon_tool_events_match_agent_run_result_schema() -> None:
+    import asyncio
+
+    from langbot_plugin.api.entities.builtin.agent_runner import AgentRunResult
+
+    module = _load_plugin_module("acp-agent-runner", "daemon.py", "daemon")
+    daemon = object.__new__(module.RunnerDaemon)
+    events = []
+
+    async def fake_emit(job_id, event):
+        events.append((job_id, event))
+
+    daemon.emit_event = fake_emit
+
+    asyncio.run(
+        daemon._emit_tool_update(
+            "job-1",
+            {"toolCallId": "tool-1", "name": "read_file", "status": "pending"},
+            set(),
+        )
+    )
+
+    assert events == [
+        (
+            "job-1",
+            {
+                "type": "tool.call.started",
+                "data": {
+                    "tool_call_id": "tool-1",
+                    "tool_name": "read_file",
+                    "parameters": {},
+                },
+            },
+        )
+    ]
+
+    event = dict(events[0][1])
+    event["run_id"] = "run-1"
+    AgentRunResult.model_validate(event)
+
+
 def test_acp_runner_uses_sdk_mcp_bridge_helper(monkeypatch) -> None:
     module = _load_runner_module("acp-agent-runner")
     calls = {}
 
-    class FakeBridge:
-        server_name = "langbot_agent"
-        endpoint = "http://127.0.0.1:12345"
-        http_mcp_endpoint = "http://127.0.0.1:12345/mcp/http"
-
-        @classmethod
-        def from_run_api(cls, api, ctx, *, host, port, request_timeout):
+    class FakeAccess:
+        def __init__(
+            self,
+            api,
+            ctx,
+            *,
+            enabled,
+            location,
+            mode,
+            transport,
+            bridge_host,
+            bridge_port,
+            bridge_public_url,
+            bridge_request_timeout,
+            gateway_host,
+            gateway_port,
+            gateway_public_url,
+            gateway_request_timeout,
+            gateway_token_ttl,
+        ):
             calls["api"] = api
             calls["ctx"] = ctx
-            calls["host"] = host
-            calls["port"] = port
-            calls["request_timeout"] = request_timeout
-            return cls()
+            calls["enabled"] = enabled
+            calls["location"] = location
+            calls["mode"] = mode
+            calls["transport"] = transport
+            calls["bridge_host"] = bridge_host
+            calls["bridge_port"] = bridge_port
+            calls["bridge_public_url"] = bridge_public_url
+            calls["bridge_request_timeout"] = bridge_request_timeout
+            calls["gateway_host"] = gateway_host
+            calls["gateway_port"] = gateway_port
+            calls["gateway_public_url"] = gateway_public_url
+            calls["gateway_request_timeout"] = gateway_request_timeout
+            calls["gateway_token_ttl"] = gateway_token_ttl
+            self.server_config = module.AgentMCPServerConfig.stdio(
+                name="langbot_agent",
+                command="python",
+                args=["-m", "langbot_plugin.api.agent_tools.mcp_stdio"],
+                env={"LANGBOT_AGENT_MCP_ENDPOINT": "http://127.0.0.1:12345"},
+            )
+            self.reverse_tunnel = None
 
         def start(self):
             calls["started"] = True
-
-        def mcp_server_config(self):
-            return {
-                "command": "python",
-                "args": ["-m", "langbot_plugin.api.agent_tools.mcp_stdio"],
-                "env": {"LANGBOT_AGENT_MCP_ENDPOINT": self.endpoint},
-            }
 
     runner = object.__new__(module.DefaultAgentRunner)
     runner.get_run_api = lambda ctx: "run-api"
     ctx = object()
 
-    monkeypatch.setattr(module, "AgentRunMCPBridge", FakeBridge)
-    bridge, servers = runner._mcp_servers(
+    monkeypatch.setattr(module, "AgentRunMCPAccess", FakeAccess)
+    access, servers = runner._mcp_servers(
         ctx,
         {
             "mcp_servers": [],
@@ -176,16 +386,31 @@ def test_acp_runner_uses_sdk_mcp_bridge_helper(monkeypatch) -> None:
             "mcp_public_url": "",
             "location": "local",
             "langbot_assets_mode": "ephemeral",
+            "asset_gateway_host": "127.0.0.1",
+            "asset_gateway_port": 0,
+            "asset_gateway_request_timeout": 60.0,
+            "asset_gateway_token_ttl": 3600.0,
+            "asset_gateway_public_url": "",
         },
     )
 
-    assert isinstance(bridge, FakeBridge)
+    assert isinstance(access, FakeAccess)
     assert calls == {
         "api": "run-api",
         "ctx": ctx,
-        "host": "127.0.0.1",
-        "port": 0,
-        "request_timeout": 15.0,
+        "enabled": True,
+        "location": "local",
+        "mode": "ephemeral",
+        "transport": "stdio",
+        "bridge_host": "127.0.0.1",
+        "bridge_port": 0,
+        "bridge_public_url": "",
+        "bridge_request_timeout": 15.0,
+        "gateway_host": "127.0.0.1",
+        "gateway_port": 0,
+        "gateway_public_url": "",
+        "gateway_request_timeout": 60.0,
+        "gateway_token_ttl": 3600.0,
         "started": True,
     }
     assert servers == [
@@ -203,38 +428,57 @@ def test_acp_runner_can_use_sdk_asset_gateway(monkeypatch) -> None:
     module = _load_runner_module("acp-agent-runner")
     calls = {}
 
-    class FakeRegistration:
-        server_name = "langbot_agent"
-        endpoint = "http://127.0.0.1:23456"
-        http_mcp_endpoint = "http://127.0.0.1:23456/mcp"
-
-        def http_mcp_server_config(self, *, public_url=None):
-            calls["public_url"] = public_url
-            return {
-                "name": self.server_name,
-                "url": public_url or self.http_mcp_endpoint,
-                "headers": {"Authorization": "Bearer token_1"},
-            }
-
-    class FakeGateway:
-        def register_run(self, api, ctx, *, ttl_seconds):
+    class FakeAccess:
+        def __init__(
+            self,
+            api,
+            ctx,
+            *,
+            enabled,
+            location,
+            mode,
+            transport,
+            bridge_host,
+            bridge_port,
+            bridge_public_url,
+            bridge_request_timeout,
+            gateway_host,
+            gateway_port,
+            gateway_public_url,
+            gateway_request_timeout,
+            gateway_token_ttl,
+        ):
             calls["api"] = api
             calls["ctx"] = ctx
-            calls["ttl_seconds"] = ttl_seconds
-            return FakeRegistration()
+            calls["enabled"] = enabled
+            calls["location"] = location
+            calls["mode"] = mode
+            calls["transport"] = transport
+            calls["bridge_host"] = bridge_host
+            calls["bridge_port"] = bridge_port
+            calls["bridge_public_url"] = bridge_public_url
+            calls["bridge_request_timeout"] = bridge_request_timeout
+            calls["gateway_host"] = gateway_host
+            calls["gateway_port"] = gateway_port
+            calls["gateway_public_url"] = gateway_public_url
+            calls["gateway_request_timeout"] = gateway_request_timeout
+            calls["gateway_token_ttl"] = gateway_token_ttl
+            self.server_config = module.AgentMCPServerConfig.http(
+                name="langbot_agent",
+                url=gateway_public_url,
+                headers={"Authorization": "Bearer token_1"},
+            )
+            self.reverse_tunnel = None
 
-    def fake_default_gateway(*, host, port, request_timeout):
-        calls["host"] = host
-        calls["port"] = port
-        calls["request_timeout"] = request_timeout
-        return FakeGateway()
+        def start(self):
+            calls["started"] = True
 
     runner = object.__new__(module.DefaultAgentRunner)
     runner.get_run_api = lambda ctx: "run-api"
     ctx = object()
 
-    monkeypatch.setattr(module, "get_default_agent_asset_gateway", fake_default_gateway)
-    registration, servers = runner._mcp_servers(
+    monkeypatch.setattr(module, "AgentRunMCPAccess", FakeAccess)
+    access, servers = runner._mcp_servers(
         ctx,
         {
             "mcp_servers": [],
@@ -254,15 +498,24 @@ def test_acp_runner_can_use_sdk_asset_gateway(monkeypatch) -> None:
         },
     )
 
-    assert isinstance(registration, FakeRegistration)
+    assert isinstance(access, FakeAccess)
     assert calls == {
-        "host": "127.0.0.1",
-        "port": 8765,
-        "request_timeout": 12.0,
         "api": "run-api",
         "ctx": ctx,
-        "ttl_seconds": 120.0,
-        "public_url": "http://gateway.example/mcp",
+        "enabled": True,
+        "location": "local",
+        "mode": "gateway",
+        "transport": "auto",
+        "bridge_host": "127.0.0.1",
+        "bridge_port": 0,
+        "bridge_public_url": "",
+        "bridge_request_timeout": 15.0,
+        "gateway_host": "127.0.0.1",
+        "gateway_port": 8765,
+        "gateway_public_url": "http://gateway.example/mcp",
+        "gateway_request_timeout": 12.0,
+        "gateway_token_ttl": 120.0,
+        "started": True,
     }
     assert servers == [
         {

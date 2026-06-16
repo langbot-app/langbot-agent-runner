@@ -8,11 +8,14 @@ import os
 import shlex
 import time
 import typing
-import urllib.parse
 
 from langbot_plugin.api.agent_tools import (
-    AgentRunMCPBridge,
-    get_default_agent_asset_gateway,
+    AgentMCPServerConfig,
+    AgentRunExternalTools,
+    AgentRunMCPAccess,
+    AgentRuntimeDaemonError,
+    agent_runtime_daemon_config_from_plugin_config,
+    get_agent_runtime_daemon_hub,
 )
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
@@ -21,6 +24,7 @@ from langbot_plugin.api.entities.builtin.agent_runner import (
 )
 from langbot_plugin.api.entities.builtin.provider.message import Message, MessageChunk
 from pkg.acp_client import AcpError, AcpStdioClient
+from pkg.prompt import acp_prompt_blocks, has_acp_prompt_input, prompt_capabilities
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +50,17 @@ DEFAULT_PROVIDER_COMMANDS = {
     "qwen-code": "npx -y @qwen-code/qwen-code --acp --experimental-skills",
 }
 SUPPORTED_PROVIDERS = set(DEFAULT_PROVIDER_COMMANDS) | {"custom"}
-SUPPORTED_LOCATIONS = {"local", "remote-ssh"}
+SUPPORTED_LOCATIONS = {"local", "remote-ssh", "daemon"}
 SUPPORTED_REMOTE_SHELLS = {"bash", "powershell", "none"}
 SUPPORTED_LANGBOT_ASSET_MODES = {"auto", "ephemeral", "gateway"}
+ACP_COMMAND_CONFIG_KEYS = ("acp-command", "remote-command", "local-command")
+WORKSPACE_CONFIG_KEYS = ("workspace",)
+REMOTE_WORKSPACE_CONFIG_KEYS = ("remote-workspace", "session-cwd")
+LOCAL_WORKSPACE_CONFIG_KEYS = ("local-workspace", "cwd", "session-cwd")
+SSH_TARGET_CONFIG_KEYS = ("ssh-target", "ssh_target")
+DAEMON_ID_CONFIG_KEYS = ("daemon-id", "daemon_id")
+SSH_IDENTITY_FILE_CONFIG_KEYS = ("ssh-identity-file", "ssh-key-file")
+ASSET_GATEWAY_PUBLIC_URL_CONFIG_KEYS = ("langbot-assets-gateway-public-url", "mcp-public-url")
 
 
 def _to_bool(value: typing.Any, default: bool = False) -> bool:
@@ -116,7 +128,7 @@ def _parse_json_list(value: typing.Any, *, label: str) -> list[typing.Any]:
     return parsed
 
 
-def _first_config_value(config: dict[str, typing.Any], *keys: str) -> str:
+def _first_config_value(config: dict[str, typing.Any], keys: tuple[str, ...]) -> str:
     for key in keys:
         value = config.get(key)
         if value not in (None, ""):
@@ -124,8 +136,8 @@ def _first_config_value(config: dict[str, typing.Any], *keys: str) -> str:
     return ""
 
 
-def _shell_command(command: str, args: list[str]) -> str:
-    parts = [command, *args]
+def _shell_command(command: str, command_args: typing.Sequence[str]) -> str:
+    parts = (command, *command_args)
     return " ".join(shlex.quote(part) for part in parts if part)
 
 
@@ -157,13 +169,6 @@ def _remote_shell_command(*, remote_shell: str, workspace: str, acp_command: str
         script_parts.append(f"cd {quoted_workspace}")
     script_parts.append(f"exec {acp_command}")
     return f"bash -lc {_posix_quote(' && '.join(script_parts))}"
-
-
-def _bridge_port(bridge: typing.Any) -> int:
-    parsed = urllib.parse.urlparse(str(bridge.endpoint))
-    if parsed.port is None:
-        raise AcpError("MCP bridge endpoint did not include a port", code="acp.mcp_bridge_invalid")
-    return parsed.port
 
 
 def _mcp_bridge_tool_names(ctx: AgentRunContext) -> list[str]:
@@ -313,7 +318,7 @@ class DefaultAgentRunner(AgentRunner):
 
         command = str(config.get("command", "") or "").strip()
         command_args = _parse_args(config.get("args"))
-        acp_command = _first_config_value(config, "acp-command", "remote-command", "local-command")
+        acp_command = _first_config_value(config, ACP_COMMAND_CONFIG_KEYS)
         if not acp_command and command:
             acp_command = _shell_command(command, command_args)
         if not acp_command:
@@ -321,18 +326,22 @@ class DefaultAgentRunner(AgentRunner):
         if not acp_command:
             raise AcpError("acp-command is required when provider=custom", code="acp.config_invalid")
 
-        workspace = _first_config_value(config, "workspace")
+        workspace = _first_config_value(config, WORKSPACE_CONFIG_KEYS)
         if not workspace:
             if location == "remote-ssh":
-                workspace = _first_config_value(config, "remote-workspace", "session-cwd")
+                workspace = _first_config_value(config, REMOTE_WORKSPACE_CONFIG_KEYS)
             else:
-                workspace = _first_config_value(config, "local-workspace", "cwd", "session-cwd") or os.getcwd()
+                workspace = _first_config_value(config, LOCAL_WORKSPACE_CONFIG_KEYS) or os.getcwd()
         if location == "remote-ssh" and not workspace:
             raise AcpError("workspace is required when location=remote-ssh", code="acp.config_invalid")
 
-        ssh_target = _first_config_value(config, "ssh-target", "ssh_target")
+        ssh_target = _first_config_value(config, SSH_TARGET_CONFIG_KEYS)
         if location == "remote-ssh" and not ssh_target:
             raise AcpError("ssh-target is required when location=remote-ssh", code="acp.config_invalid")
+
+        daemon_id = _first_config_value(config, DAEMON_ID_CONFIG_KEYS)
+        if location == "daemon" and not daemon_id:
+            raise AcpError("daemon-id is required when location=daemon", code="acp.config_invalid")
 
         remote_shell = str(config.get("remote-shell", "bash") or "bash").strip()
         if remote_shell not in SUPPORTED_REMOTE_SHELLS:
@@ -365,9 +374,11 @@ class DefaultAgentRunner(AgentRunner):
             "env": {str(k): str(v) for k, v in _parse_json_object(config.get("env-json"), label="env-json").items()},
             "ssh_target": ssh_target,
             "ssh_port": _to_int(config.get("ssh-port"), 22),
-            "ssh_identity_file": _first_config_value(config, "ssh-identity-file", "ssh-key-file"),
+            "ssh_identity_file": _first_config_value(config, SSH_IDENTITY_FILE_CONFIG_KEYS),
             "ssh_connect_timeout": _to_int(config.get("ssh-connect-timeout"), 10),
             "ssh_extra_options": _parse_args(config.get("ssh-extra-options")),
+            "daemon_id": daemon_id,
+            "daemon_connect_timeout": _to_float(config.get("daemon-connect-timeout"), 30.0),
             "remote_shell": remote_shell,
             "timeout": _to_float(config.get("timeout"), 300.0),
             "startup_timeout": _to_float(config.get("startup-timeout"), 30.0),
@@ -401,10 +412,10 @@ class DefaultAgentRunner(AgentRunner):
                 60.0,
             ),
             "asset_gateway_token_ttl": _to_float(config.get("langbot-assets-token-ttl"), 3600.0),
-            "asset_gateway_public_url": _first_config_value(
-                config,
-                "langbot-assets-gateway-public-url",
-                "mcp-public-url",
+            "asset_gateway_public_url": _first_config_value(config, ASSET_GATEWAY_PUBLIC_URL_CONFIG_KEYS),
+            "daemon_hub": agent_runtime_daemon_config_from_plugin_config(
+                self.get_plugin_config(),
+                env_prefix="LANGBOT_ACP_DAEMON",
             ),
         }
 
@@ -427,108 +438,59 @@ class DefaultAgentRunner(AgentRunner):
     def _stored_session_id(self, ctx: AgentRunContext) -> str:
         return str(ctx.state.conversation.get(ACP_SESSION_STATE_KEY) or "").strip()
 
-    def _bridge_server_config(
-        self,
-        bridge: typing.Any,
-        *,
-        transport: str,
-        public_url: str,
-    ) -> dict[str, typing.Any]:
-        if transport == "http":
-            config = bridge.http_mcp_server_config(public_url=public_url or None)
+    def _mcp_server_to_acp(self, server: AgentMCPServerConfig) -> dict[str, typing.Any]:
+        if server.transport == "http":
             return {
-                "name": str(config.get("name") or bridge.server_name),
+                "name": server.name,
                 "type": "http",
-                "url": str(config.get("url") or ""),
-                "headers": _mcp_headers_to_acp(config.get("headers")),
+                "url": server.url,
+                "headers": _mcp_headers_to_acp(server.headers),
             }
-
-        config = bridge.mcp_server_config()
+        if server.transport != "stdio":
+            raise AcpError(f"unsupported MCP transport: {server.transport}", code="acp.mcp_bridge_invalid")
         return {
-            "name": bridge.server_name,
+            "name": server.name,
             "type": "stdio",
-            "command": str(config.get("command") or ""),
-            "args": [str(item) for item in config.get("args") or []],
-            "env": _mcp_env_to_acp(config.get("env")),
+            "command": server.command,
+            "args": list(server.args),
+            "env": _mcp_env_to_acp(server.env),
         }
-
-    def _create_mcp_bridge(
-        self,
-        ctx: AgentRunContext,
-        config: dict[str, typing.Any],
-    ) -> AgentRunMCPBridge:
-        return AgentRunMCPBridge.from_run_api(
-            self.get_run_api(ctx),
-            ctx,
-            host=config["mcp_bridge_host"],
-            port=config["mcp_bridge_port"],
-            request_timeout=config["mcp_bridge_request_timeout"],
-        )
-
-    def _create_asset_gateway_registration(
-        self,
-        ctx: AgentRunContext,
-        config: dict[str, typing.Any],
-    ) -> typing.Any:
-        gateway = get_default_agent_asset_gateway(
-            host=config["asset_gateway_host"],
-            port=config["asset_gateway_port"],
-            request_timeout=config["asset_gateway_request_timeout"],
-        )
-        return gateway.register_run(
-            self.get_run_api(ctx),
-            ctx,
-            ttl_seconds=config["asset_gateway_token_ttl"],
-        )
 
     def _mcp_servers(
         self,
         ctx: AgentRunContext,
         config: dict[str, typing.Any],
-    ) -> tuple[typing.Any | None, list[dict[str, typing.Any]]]:
+    ) -> tuple[AgentRunMCPAccess | None, list[dict[str, typing.Any]]]:
         servers = [server for server in config["mcp_servers"] if isinstance(server, dict)]
         if not config["mcp_bridge_enabled"]:
             return None, servers
 
-        assets_mode = config["langbot_assets_mode"]
-        if assets_mode == "auto":
-            assets_mode = "ephemeral"
-
-        if assets_mode == "gateway":
-            registration = self._create_asset_gateway_registration(ctx, config)
-            public_url = config["asset_gateway_public_url"]
-            if not public_url and config["location"] == "remote-ssh":
-                public_url = registration.http_mcp_endpoint
-            servers.append(
-                self._bridge_server_config(
-                    registration,
-                    transport="http",
-                    public_url=public_url,
-                )
-            )
-            return registration, servers
-
-        transport = config["mcp_bridge_transport"]
-        if transport == "auto":
-            transport = "http" if config["location"] == "remote-ssh" else "stdio"
-        if transport not in {"stdio", "http"}:
+        if config["mcp_bridge_transport"] not in {"auto", "stdio", "http"}:
             raise AcpError("mcp-bridge-transport must be auto, stdio, or http", code="acp.config_invalid")
 
-        bridge = self._create_mcp_bridge(ctx, config)
-        bridge.start()
-        public_url = config["mcp_public_url"]
-        if not public_url and config["location"] == "remote-ssh" and transport == "http":
-            public_url = bridge.http_mcp_endpoint
-        servers.append(
-            self._bridge_server_config(
-                bridge,
-                transport=transport,
-                public_url=public_url,
-            )
+        access = AgentRunMCPAccess(
+            self.get_run_api(ctx),
+            ctx,
+            enabled=True,
+            location=config["location"],
+            mode=config["langbot_assets_mode"],
+            transport=config["mcp_bridge_transport"],
+            bridge_host=config["mcp_bridge_host"],
+            bridge_port=config["mcp_bridge_port"],
+            bridge_public_url=config["mcp_public_url"],
+            bridge_request_timeout=config["mcp_bridge_request_timeout"],
+            gateway_host=config["asset_gateway_host"],
+            gateway_port=config["asset_gateway_port"],
+            gateway_public_url=config["asset_gateway_public_url"],
+            gateway_request_timeout=config["asset_gateway_request_timeout"],
+            gateway_token_ttl=config["asset_gateway_token_ttl"],
         )
-        return bridge, servers
+        access.start()
+        if access.server_config is not None:
+            servers.append(self._mcp_server_to_acp(access.server_config))
+        return access, servers
 
-    def _launch_config(self, config: dict[str, typing.Any], bridge: typing.Any | None) -> dict[str, typing.Any]:
+    def _launch_config(self, config: dict[str, typing.Any], access: AgentRunMCPAccess | None) -> dict[str, typing.Any]:
         if config["location"] == "local":
             argv = _parse_args(config["acp_command"])
             if not argv:
@@ -554,9 +516,8 @@ class DefaultAgentRunner(AgentRunner):
             ssh_args.extend(["-i", config["ssh_identity_file"]])
         ssh_args.extend(config["ssh_extra_options"])
 
-        if config["mcp_bridge_enabled"] and bridge is not None:
-            port = _bridge_port(bridge)
-            ssh_args.extend(["-R", f"127.0.0.1:{port}:127.0.0.1:{port}"])
+        if access is not None and access.reverse_tunnel is not None:
+            ssh_args.extend(access.reverse_tunnel.ssh_args())
 
         ssh_args.append(config["ssh_target"])
         ssh_args.append(
@@ -631,7 +592,7 @@ class DefaultAgentRunner(AgentRunner):
         client: AcpStdioClient,
         ctx: AgentRunContext,
         session_id: str,
-        prompt_text: str,
+        prompt_blocks: list[dict[str, typing.Any]],
         *,
         timeout: float,
         streaming: bool,
@@ -640,12 +601,7 @@ class DefaultAgentRunner(AgentRunner):
             "session/prompt",
             {
                 "sessionId": session_id,
-                "prompt": [
-                    {
-                        "type": "text",
-                        "text": prompt_text,
-                    }
-                ],
+                "prompt": prompt_blocks,
             },
         )
 
@@ -711,6 +667,64 @@ class DefaultAgentRunner(AgentRunner):
         yield AgentRunResult.message_completed(ctx.run_id, Message(role="assistant", content=final_text))
         yield AgentRunResult.run_completed(ctx.run_id, finish_reason="stop")
 
+    def _daemon_payload(
+        self,
+        ctx: AgentRunContext,
+        config: dict[str, typing.Any],
+        prompt_text: str,
+    ) -> dict[str, typing.Any]:
+        return {
+            "run_id": ctx.run_id,
+            "prompt_text": prompt_text,
+            "input": ctx.input.model_dump(mode="json") if hasattr(ctx.input, "model_dump") else {},
+            "input_text": self._input_text(ctx),
+            "config": {
+                "provider": config["provider"],
+                "acp_command": config["acp_command"],
+                "workspace": config["workspace"],
+                "cwd": config["workspace"] or None,
+                "session_cwd": config["session_cwd"],
+                "env": config["env"],
+                "timeout": config["timeout"],
+                "startup_timeout": config["startup_timeout"],
+                "initialize_timeout": config["initialize_timeout"],
+                "reuse_session": config["reuse_session"],
+                "create_session_if_missing": config["create_session_if_missing"],
+                "streaming": config["streaming"],
+                "permission_decision": config["permission_decision"],
+                "stored_session_id": self._stored_session_id(ctx),
+                "mcp_servers": config["mcp_servers"],
+                "langbot_assets_enabled": config["mcp_bridge_enabled"],
+                "mcp_request_timeout": config["mcp_bridge_request_timeout"],
+            },
+        }
+
+    async def _run_daemon(
+        self,
+        ctx: AgentRunContext,
+        config: dict[str, typing.Any],
+        prompt_text: str,
+    ) -> typing.AsyncGenerator[AgentRunResult, None]:
+        hub = get_agent_runtime_daemon_hub("acp", error_code_prefix="acp")
+        if not hub.is_running:
+            await hub.start(
+                host=config["daemon_hub"]["host"],
+                port=config["daemon_hub"]["port"],
+                token=config["daemon_hub"]["token"],
+            )
+
+        await hub.wait_for_daemon(config["daemon_id"], config["daemon_connect_timeout"])
+        tools = AgentRunExternalTools(self.get_run_api(ctx), ctx) if config["mcp_bridge_enabled"] else None
+        payload = self._daemon_payload(ctx, config, prompt_text)
+        async for event in hub.run_job(
+            daemon_id=config["daemon_id"],
+            payload=payload,
+            tools=tools,
+            timeout=config["timeout"],
+        ):
+            event.setdefault("run_id", ctx.run_id)
+            yield AgentRunResult.model_validate(event)
+
     async def run(self, ctx: AgentRunContext) -> typing.AsyncGenerator[AgentRunResult, None]:
         try:
             config = self._validate_config(ctx)
@@ -719,17 +733,28 @@ class DefaultAgentRunner(AgentRunner):
             return
 
         input_text = self._input_text(ctx)
-        if not input_text:
+        if not has_acp_prompt_input(input_text, ctx.input):
             yield AgentRunResult.run_failed(ctx.run_id, error="input text is required", code="acp.empty_input")
             return
 
         prompt_text = self._with_run_scope_prompt(ctx, input_text) if config["append_run_scope_prompt"] else input_text
 
-        bridge = None
+        if config["location"] == "daemon":
+            try:
+                async for result in self._run_daemon(ctx, config, prompt_text):
+                    yield result
+            except AgentRuntimeDaemonError as exc:
+                yield AgentRunResult.run_failed(ctx.run_id, error=exc.message, code=exc.code, retryable=exc.retryable)
+            except Exception as exc:
+                logger.exception("ACP daemon transport failed: %s", exc)
+                yield AgentRunResult.run_failed(ctx.run_id, error=str(exc), code="acp.daemon_unexpected")
+            return
+
+        access = None
         client: AcpStdioClient | None = None
         try:
-            bridge, mcp_servers = self._mcp_servers(ctx, config)
-            launch_config = self._launch_config(config, bridge)
+            access, mcp_servers = self._mcp_servers(ctx, config)
+            launch_config = self._launch_config(config, access)
             client = AcpStdioClient(
                 command=launch_config["command"],
                 args=launch_config["args"],
@@ -756,11 +781,12 @@ class DefaultAgentRunner(AgentRunner):
                         scope="conversation",
                     )
 
+                prompt_blocks = acp_prompt_blocks(prompt_text, ctx.input, prompt_capabilities(initialize_result))
                 async for result in self._stream_prompt_results(
                     client,
                     ctx,
                     session_id,
-                    prompt_text,
+                    prompt_blocks,
                     timeout=config["timeout"],
                     streaming=config["streaming"],
                 ):
@@ -776,5 +802,5 @@ class DefaultAgentRunner(AgentRunner):
             logger.exception("ACP runner unexpected error: %s", exc)
             yield AgentRunResult.run_failed(ctx.run_id, error=f"ACP runner error: {exc}", code="acp.unexpected_error")
         finally:
-            if bridge is not None:
-                bridge.stop()
+            if access is not None:
+                access.stop()

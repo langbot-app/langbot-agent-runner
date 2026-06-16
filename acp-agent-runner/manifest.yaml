@@ -3,7 +3,7 @@ kind: Plugin
 metadata:
   author: langbot
   name: acp-agent-runner
-  version: 0.1.2
+  version: 0.1.4
   label:
     en_US: ACP Agent Runner
     zh_Hans: ACP Agent Runner
@@ -12,8 +12,45 @@ metadata:
     zh_Hans: 将任意兼容 Agent Client Protocol 的编码智能体作为 LangBot AgentRunner 运行。
   icon: assets/icon.svg
 spec:
-  version: 0.1.2
-  config: []
+  version: 0.1.4
+  config:
+    - name: daemon-enabled
+      label:
+        en_US: Enable Runner Daemon Hub
+        zh_Hans: 启用 Runner Daemon Hub
+      description:
+        en_US: Start a WebSocket hub so user-side runner daemons can connect outward to this plugin.
+        zh_Hans: 启动 WebSocket Hub，让用户侧 runner daemon 主动连接到此插件。
+      type: boolean
+      required: false
+      default: false
+    - name: daemon-host
+      label:
+        en_US: Daemon Hub Host
+        zh_Hans: Daemon Hub 监听地址
+      description:
+        en_US: Bind host for the daemon WebSocket hub. Use 0.0.0.0 only when the container or reverse proxy intentionally exposes it.
+        zh_Hans: Daemon WebSocket Hub 的监听地址。仅在容器或反向代理明确暴露时使用 0.0.0.0。
+      type: string
+      required: false
+      default: 127.0.0.1
+    - name: daemon-port
+      label:
+        en_US: Daemon Hub Port
+        zh_Hans: Daemon Hub 端口
+      type: integer
+      required: false
+      default: 8766
+    - name: daemon-token
+      label:
+        en_US: Daemon Shared Token
+        zh_Hans: Daemon 共享 Token
+      description:
+        en_US: Optional shared token required from user-side runner daemons.
+        zh_Hans: 可选，用户侧 runner daemon 连接时必须提供的共享 Token。
+      type: password
+      required: false
+      default: ''
   components:
     AgentRunner:
       fromDirs:
