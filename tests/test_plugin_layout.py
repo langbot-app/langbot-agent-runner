@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import tomllib
@@ -7,10 +8,21 @@ import types
 from pathlib import Path
 
 import yaml
+from langbot_plugin.api.entities.builtin.agent_runner import (
+    AgentEventContext,
+    AgentInput,
+    AgentResources,
+    AgentRunContext,
+    AgentRuntimeContext,
+    AgentTrigger,
+    DeliveryContext,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIRS = {
     "acp-agent-runner",
+    "claude-code-agent",
+    "codex-agent",
     "coze-agent",
     "dashscope-agent",
     "deerflow-agent",
@@ -278,7 +290,7 @@ def test_acp_daemon_tool_events_match_agent_run_result_schema() -> None:
     async def fake_emit(job_id, event):
         events.append((job_id, event))
 
-    daemon._emit = fake_emit
+    daemon.emit_event = fake_emit
 
     asyncio.run(
         daemon._emit_tool_update(
@@ -311,36 +323,58 @@ def test_acp_runner_uses_sdk_mcp_bridge_helper(monkeypatch) -> None:
     module = _load_runner_module("acp-agent-runner")
     calls = {}
 
-    class FakeBridge:
-        server_name = "langbot_agent"
-        endpoint = "http://127.0.0.1:12345"
-        http_mcp_endpoint = "http://127.0.0.1:12345/mcp/http"
-
-        @classmethod
-        def from_run_api(cls, api, ctx, *, host, port, request_timeout):
+    class FakeAccess:
+        def __init__(
+            self,
+            api,
+            ctx,
+            *,
+            enabled,
+            location,
+            mode,
+            transport,
+            bridge_host,
+            bridge_port,
+            bridge_public_url,
+            bridge_request_timeout,
+            gateway_host,
+            gateway_port,
+            gateway_public_url,
+            gateway_request_timeout,
+            gateway_token_ttl,
+        ):
             calls["api"] = api
             calls["ctx"] = ctx
-            calls["host"] = host
-            calls["port"] = port
-            calls["request_timeout"] = request_timeout
-            return cls()
+            calls["enabled"] = enabled
+            calls["location"] = location
+            calls["mode"] = mode
+            calls["transport"] = transport
+            calls["bridge_host"] = bridge_host
+            calls["bridge_port"] = bridge_port
+            calls["bridge_public_url"] = bridge_public_url
+            calls["bridge_request_timeout"] = bridge_request_timeout
+            calls["gateway_host"] = gateway_host
+            calls["gateway_port"] = gateway_port
+            calls["gateway_public_url"] = gateway_public_url
+            calls["gateway_request_timeout"] = gateway_request_timeout
+            calls["gateway_token_ttl"] = gateway_token_ttl
+            self.server_config = module.AgentMCPServerConfig.stdio(
+                name="langbot_agent",
+                command="python",
+                args=["-m", "langbot_plugin.api.agent_tools.mcp_stdio"],
+                env={"LANGBOT_AGENT_MCP_ENDPOINT": "http://127.0.0.1:12345"},
+            )
+            self.reverse_tunnel = None
 
         def start(self):
             calls["started"] = True
-
-        def mcp_server_config(self):
-            return {
-                "command": "python",
-                "args": ["-m", "langbot_plugin.api.agent_tools.mcp_stdio"],
-                "env": {"LANGBOT_AGENT_MCP_ENDPOINT": self.endpoint},
-            }
 
     runner = object.__new__(module.DefaultAgentRunner)
     runner.get_run_api = lambda ctx: "run-api"
     ctx = object()
 
-    monkeypatch.setattr(module, "AgentRunMCPBridge", FakeBridge)
-    bridge, servers = runner._mcp_servers(
+    monkeypatch.setattr(module, "AgentRunMCPAccess", FakeAccess)
+    access, servers = runner._mcp_servers(
         ctx,
         {
             "mcp_servers": [],
@@ -352,16 +386,31 @@ def test_acp_runner_uses_sdk_mcp_bridge_helper(monkeypatch) -> None:
             "mcp_public_url": "",
             "location": "local",
             "langbot_assets_mode": "ephemeral",
+            "asset_gateway_host": "127.0.0.1",
+            "asset_gateway_port": 0,
+            "asset_gateway_request_timeout": 60.0,
+            "asset_gateway_token_ttl": 3600.0,
+            "asset_gateway_public_url": "",
         },
     )
 
-    assert isinstance(bridge, FakeBridge)
+    assert isinstance(access, FakeAccess)
     assert calls == {
         "api": "run-api",
         "ctx": ctx,
-        "host": "127.0.0.1",
-        "port": 0,
-        "request_timeout": 15.0,
+        "enabled": True,
+        "location": "local",
+        "mode": "ephemeral",
+        "transport": "stdio",
+        "bridge_host": "127.0.0.1",
+        "bridge_port": 0,
+        "bridge_public_url": "",
+        "bridge_request_timeout": 15.0,
+        "gateway_host": "127.0.0.1",
+        "gateway_port": 0,
+        "gateway_public_url": "",
+        "gateway_request_timeout": 60.0,
+        "gateway_token_ttl": 3600.0,
         "started": True,
     }
     assert servers == [
@@ -379,38 +428,57 @@ def test_acp_runner_can_use_sdk_asset_gateway(monkeypatch) -> None:
     module = _load_runner_module("acp-agent-runner")
     calls = {}
 
-    class FakeRegistration:
-        server_name = "langbot_agent"
-        endpoint = "http://127.0.0.1:23456"
-        http_mcp_endpoint = "http://127.0.0.1:23456/mcp"
-
-        def http_mcp_server_config(self, *, public_url=None):
-            calls["public_url"] = public_url
-            return {
-                "name": self.server_name,
-                "url": public_url or self.http_mcp_endpoint,
-                "headers": {"Authorization": "Bearer token_1"},
-            }
-
-    class FakeGateway:
-        def register_run(self, api, ctx, *, ttl_seconds):
+    class FakeAccess:
+        def __init__(
+            self,
+            api,
+            ctx,
+            *,
+            enabled,
+            location,
+            mode,
+            transport,
+            bridge_host,
+            bridge_port,
+            bridge_public_url,
+            bridge_request_timeout,
+            gateway_host,
+            gateway_port,
+            gateway_public_url,
+            gateway_request_timeout,
+            gateway_token_ttl,
+        ):
             calls["api"] = api
             calls["ctx"] = ctx
-            calls["ttl_seconds"] = ttl_seconds
-            return FakeRegistration()
+            calls["enabled"] = enabled
+            calls["location"] = location
+            calls["mode"] = mode
+            calls["transport"] = transport
+            calls["bridge_host"] = bridge_host
+            calls["bridge_port"] = bridge_port
+            calls["bridge_public_url"] = bridge_public_url
+            calls["bridge_request_timeout"] = bridge_request_timeout
+            calls["gateway_host"] = gateway_host
+            calls["gateway_port"] = gateway_port
+            calls["gateway_public_url"] = gateway_public_url
+            calls["gateway_request_timeout"] = gateway_request_timeout
+            calls["gateway_token_ttl"] = gateway_token_ttl
+            self.server_config = module.AgentMCPServerConfig.http(
+                name="langbot_agent",
+                url=gateway_public_url,
+                headers={"Authorization": "Bearer token_1"},
+            )
+            self.reverse_tunnel = None
 
-    def fake_default_gateway(*, host, port, request_timeout):
-        calls["host"] = host
-        calls["port"] = port
-        calls["request_timeout"] = request_timeout
-        return FakeGateway()
+        def start(self):
+            calls["started"] = True
 
     runner = object.__new__(module.DefaultAgentRunner)
     runner.get_run_api = lambda ctx: "run-api"
     ctx = object()
 
-    monkeypatch.setattr(module, "get_default_agent_asset_gateway", fake_default_gateway)
-    registration, servers = runner._mcp_servers(
+    monkeypatch.setattr(module, "AgentRunMCPAccess", FakeAccess)
+    access, servers = runner._mcp_servers(
         ctx,
         {
             "mcp_servers": [],
@@ -430,15 +498,24 @@ def test_acp_runner_can_use_sdk_asset_gateway(monkeypatch) -> None:
         },
     )
 
-    assert isinstance(registration, FakeRegistration)
+    assert isinstance(access, FakeAccess)
     assert calls == {
-        "host": "127.0.0.1",
-        "port": 8765,
-        "request_timeout": 12.0,
         "api": "run-api",
         "ctx": ctx,
-        "ttl_seconds": 120.0,
-        "public_url": "http://gateway.example/mcp",
+        "enabled": True,
+        "location": "local",
+        "mode": "gateway",
+        "transport": "auto",
+        "bridge_host": "127.0.0.1",
+        "bridge_port": 0,
+        "bridge_public_url": "",
+        "bridge_request_timeout": 15.0,
+        "gateway_host": "127.0.0.1",
+        "gateway_port": 8765,
+        "gateway_public_url": "http://gateway.example/mcp",
+        "gateway_request_timeout": 12.0,
+        "gateway_token_ttl": 120.0,
+        "started": True,
     }
     assert servers == [
         {
@@ -448,6 +525,139 @@ def test_acp_runner_can_use_sdk_asset_gateway(monkeypatch) -> None:
             "headers": [{"name": "Authorization", "value": "Bearer token_1"}],
         }
     ]
+
+
+def _native_ctx(config: dict) -> AgentRunContext:
+    return AgentRunContext(
+        run_id="run_native",
+        trigger=AgentTrigger(type="message.received"),
+        event=AgentEventContext(event_id="evt_1", event_type="message.received", source="test"),
+        input=AgentInput(text="hello native"),
+        delivery=DeliveryContext(surface="test"),
+        resources=AgentResources(),
+        runtime=AgentRuntimeContext(),
+        config=config,
+    )
+
+
+def _write_fake_native_cli(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "import json",
+                "import sys",
+                "session_id = 'missing-session'",
+                "if '--session-id' in sys.argv:",
+                "    session_id = sys.argv[sys.argv.index('--session-id') + 1]",
+                "prompt = sys.argv[-1]",
+                "print(json.dumps({'type': 'session.started', 'session_id': session_id}))",
+                "print(json.dumps({'type': 'message.completed', 'text': 'FAKE_NATIVE_OK:' + prompt}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_fake_codex_app_server(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "import json",
+                "import sys",
+                "thread_id = 'thread-123'",
+                "def send(payload):",
+                "    print(json.dumps(payload), flush=True)",
+                "for line in sys.stdin:",
+                "    request = json.loads(line)",
+                "    method = request.get('method')",
+                "    request_id = request.get('id')",
+                "    params = request.get('params') or {}",
+                "    if request_id is not None and method == 'initialize':",
+                "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {}})",
+                "    elif method == 'initialized':",
+                "        pass",
+                "    elif request_id is not None and method == 'thread/resume':",
+                "        thread_id = params.get('threadId') or thread_id",
+                "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'threadId': thread_id}})",
+                "    elif request_id is not None and method == 'thread/start':",
+                "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'threadId': thread_id}})",
+                "    elif request_id is not None and method == 'turn/start':",
+                "        prompt = params.get('input', [{}])[0].get('text', '')",
+                "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {}})",
+                "        send({'jsonrpc': '2.0', 'method': 'turn/started', 'params': {'threadId': thread_id, 'turn': {'id': 'turn-1'}}})",
+                "        send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'item-1', 'type': 'agentMessage', 'text': 'FAKE_CODEX_APP_SERVER_OK:' + prompt, 'phase': 'final_answer'}}})",
+                "        send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'item-1', 'type': 'agentMessage', 'text': 'FAKE_CODEX_APP_SERVER_OK:' + prompt, 'phase': 'final_answer'}}})",
+                "        send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'item-2', 'type': 'agentMessage', 'text': 'FAKE_CODEX_APP_SERVER_OK:' + prompt, 'phase': 'final_answer'}}})",
+                "        send({'jsonrpc': '2.0', 'method': 'turn/completed', 'params': {'threadId': thread_id, 'turn': {'id': 'turn-1', 'status': 'completed'}}})",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_claude_code_runner_executes_fake_native_cli(tmp_path: Path) -> None:
+    fake_cli = tmp_path / "fake_native_cli.py"
+    _write_fake_native_cli(fake_cli)
+    module = _load_runner_module("claude-code-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    runner.get_run_api = lambda ctx: None
+
+    ctx = _native_ctx(
+        {
+            "location": "local",
+            "command": sys.executable,
+            "args-json": [str(fake_cli)],
+            "workspace": str(tmp_path),
+            "langbot-assets-enabled": False,
+        }
+    )
+    results = asyncio.run(_collect_async(runner.run(ctx)))
+
+    assert [item.type for item in results] == [
+        "state.updated",
+        "message.delta",
+        "message.completed",
+        "run.completed",
+    ]
+    assert results[2].data["message"]["content"] == "FAKE_NATIVE_OK:hello native"
+    assert results[0].data["key"] == "external.claude_code_session_id"
+
+
+def test_codex_runner_executes_fake_native_cli(tmp_path: Path) -> None:
+    fake_cli = tmp_path / "fake_codex_app_server.py"
+    _write_fake_codex_app_server(fake_cli)
+    module = _load_runner_module("codex-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    runner.get_run_api = lambda ctx: None
+
+    ctx = _native_ctx(
+        {
+            "location": "local",
+            "command": f"{sys.executable} {fake_cli}",
+            "workspace": str(tmp_path),
+            "langbot-assets-enabled": False,
+        }
+    )
+    results = asyncio.run(_collect_async(runner.run(ctx)))
+
+    assert [item.type for item in results] == [
+        "state.updated",
+        "message.delta",
+        "run.completed",
+    ]
+    assert results[1].data["chunk"]["content"] == "FAKE_CODEX_APP_SERVER_OK:hello native"
+    assert results[1].data["chunk"]["is_final"] is True
+    assert results[0].data["key"] == "external.codex_session_id"
+    assert results[0].data["value"] == "thread-123"
+    assert [item.sequence for item in results] == [1, 2, 3]
+
+
+async def _collect_async(stream):
+    return [item async for item in stream]
 
 
 def test_dify_runner_injects_langbot_asset_run_token(monkeypatch) -> None:
@@ -572,7 +782,7 @@ def test_acp_resource_summary_includes_run_scoped_bridge_tools() -> None:
 
 
 def test_external_service_runners_declare_minimal_plugin_storage_permission() -> None:
-    for plugin_dir in PLUGIN_DIRS - {"acp-agent-runner", "dify-agent"}:
+    for plugin_dir in PLUGIN_DIRS - {"acp-agent-runner", "claude-code-agent", "codex-agent", "dify-agent"}:
         runner = _load_yaml(ROOT / plugin_dir / "components" / "agent_runner" / "default.yaml")
         assert runner["spec"]["permissions"] == {"storage": ["plugin"]}
 

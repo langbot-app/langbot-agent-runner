@@ -1,0 +1,53 @@
+apiVersion: langbot/v1
+kind: Plugin
+metadata:
+  author: langbot
+  name: claude-code-agent
+  version: 0.1.2
+  label:
+    en_US: Claude Code Agent
+    zh_Hans: Claude Code Agent
+  description:
+    en_US: Run Claude Code CLI as a LangBot AgentRunner.
+    zh_Hans: 将 Claude Code CLI 作为 LangBot AgentRunner 运行。
+  icon: assets/icon.svg
+spec:
+  version: 0.1.2
+  config:
+    - name: daemon-enabled
+      label:
+        en_US: Enable Daemon Hub
+        zh_Hans: 启用 Daemon Hub
+      type: boolean
+      required: false
+      default: false
+    - name: daemon-host
+      label:
+        en_US: Daemon Hub Host
+        zh_Hans: Daemon Hub 监听地址
+      type: string
+      required: false
+      default: 127.0.0.1
+    - name: daemon-port
+      label:
+        en_US: Daemon Hub Port
+        zh_Hans: Daemon Hub 端口
+      type: integer
+      required: false
+      default: 8767
+    - name: daemon-token
+      label:
+        en_US: Daemon Token
+        zh_Hans: Daemon Token
+      type: string
+      required: false
+      default: ''
+  components:
+    AgentRunner:
+      fromDirs:
+        - path: components/agent_runner/
+  pages: []
+execution:
+  python:
+    path: main.py
+    attr: ClaudeCodeAgentPlugin

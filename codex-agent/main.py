@@ -1,4 +1,4 @@
-"""ACP Agent Runner plugin entry point."""
+"""Codex AgentRunner plugin entry point."""
 
 from __future__ import annotations
 
@@ -9,20 +9,15 @@ from langbot_plugin.api.agent_tools import (
 from langbot_plugin.api.definition.plugin import BasePlugin
 
 
-class AcpAgentRunnerPlugin(BasePlugin):
-    """Agent Client Protocol runner plugin."""
-
-    def __init__(self):
-        super().__init__()
-
+class CodexAgentPlugin(BasePlugin):
     async def initialize(self) -> None:
-        """Initialize the plugin."""
         config = agent_runtime_daemon_config_from_plugin_config(
             self.get_config(),
-            env_prefix="LANGBOT_ACP_DAEMON",
+            env_prefix="LANGBOT_CODEX_DAEMON",
+            default_port=8768,
         )
         if config["enabled"]:
-            await get_agent_runtime_daemon_hub("acp", error_code_prefix="acp").start(
+            await get_agent_runtime_daemon_hub("codex", error_code_prefix="codex").start(
                 host=config["host"],
                 port=config["port"],
                 token=config["token"],

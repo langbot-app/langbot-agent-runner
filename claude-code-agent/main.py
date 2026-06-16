@@ -1,4 +1,4 @@
-"""ACP Agent Runner plugin entry point."""
+"""Claude Code AgentRunner plugin entry point."""
 
 from __future__ import annotations
 
@@ -9,20 +9,15 @@ from langbot_plugin.api.agent_tools import (
 from langbot_plugin.api.definition.plugin import BasePlugin
 
 
-class AcpAgentRunnerPlugin(BasePlugin):
-    """Agent Client Protocol runner plugin."""
-
-    def __init__(self):
-        super().__init__()
-
+class ClaudeCodeAgentPlugin(BasePlugin):
     async def initialize(self) -> None:
-        """Initialize the plugin."""
         config = agent_runtime_daemon_config_from_plugin_config(
             self.get_config(),
-            env_prefix="LANGBOT_ACP_DAEMON",
+            env_prefix="LANGBOT_CLAUDE_CODE_DAEMON",
+            default_port=8767,
         )
         if config["enabled"]:
-            await get_agent_runtime_daemon_hub("acp", error_code_prefix="acp").start(
+            await get_agent_runtime_daemon_hub("claude-code", error_code_prefix="claude_code").start(
                 host=config["host"],
                 port=config["port"],
                 token=config["token"],
