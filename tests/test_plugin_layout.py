@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import tomllib
@@ -7,10 +8,21 @@ import types
 from pathlib import Path
 
 import yaml
+from langbot_plugin.api.entities.builtin.agent_runner import (
+    AgentEventContext,
+    AgentInput,
+    AgentResources,
+    AgentRunContext,
+    AgentRuntimeContext,
+    AgentTrigger,
+    DeliveryContext,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIRS = {
     "acp-agent-runner",
+    "claude-code-agent",
+    "codex-agent",
     "coze-agent",
     "dashscope-agent",
     "deerflow-agent",
@@ -262,6 +274,139 @@ def test_acp_runner_can_use_sdk_asset_gateway(monkeypatch) -> None:
     ]
 
 
+def _native_ctx(config: dict) -> AgentRunContext:
+    return AgentRunContext(
+        run_id="run_native",
+        trigger=AgentTrigger(type="message.received"),
+        event=AgentEventContext(event_id="evt_1", event_type="message.received", source="test"),
+        input=AgentInput(text="hello native"),
+        delivery=DeliveryContext(surface="test"),
+        resources=AgentResources(),
+        runtime=AgentRuntimeContext(),
+        config=config,
+    )
+
+
+def _write_fake_native_cli(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "import json",
+                "import sys",
+                "session_id = 'missing-session'",
+                "if '--session-id' in sys.argv:",
+                "    session_id = sys.argv[sys.argv.index('--session-id') + 1]",
+                "prompt = sys.argv[-1]",
+                "print(json.dumps({'type': 'session.started', 'session_id': session_id}))",
+                "print(json.dumps({'type': 'message.completed', 'text': 'FAKE_NATIVE_OK:' + prompt}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_fake_codex_app_server(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "import json",
+                "import sys",
+                "thread_id = 'thread-123'",
+                "def send(payload):",
+                "    print(json.dumps(payload), flush=True)",
+                "for line in sys.stdin:",
+                "    request = json.loads(line)",
+                "    method = request.get('method')",
+                "    request_id = request.get('id')",
+                "    params = request.get('params') or {}",
+                "    if request_id is not None and method == 'initialize':",
+                "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {}})",
+                "    elif method == 'initialized':",
+                "        pass",
+                "    elif request_id is not None and method == 'thread/resume':",
+                "        thread_id = params.get('threadId') or thread_id",
+                "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'threadId': thread_id}})",
+                "    elif request_id is not None and method == 'thread/start':",
+                "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'threadId': thread_id}})",
+                "    elif request_id is not None and method == 'turn/start':",
+                "        prompt = params.get('input', [{}])[0].get('text', '')",
+                "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {}})",
+                "        send({'jsonrpc': '2.0', 'method': 'turn/started', 'params': {'threadId': thread_id, 'turn': {'id': 'turn-1'}}})",
+                "        send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'item-1', 'type': 'agentMessage', 'text': 'FAKE_CODEX_APP_SERVER_OK:' + prompt, 'phase': 'final_answer'}}})",
+                "        send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'item-1', 'type': 'agentMessage', 'text': 'FAKE_CODEX_APP_SERVER_OK:' + prompt, 'phase': 'final_answer'}}})",
+                "        send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'item-2', 'type': 'agentMessage', 'text': 'FAKE_CODEX_APP_SERVER_OK:' + prompt, 'phase': 'final_answer'}}})",
+                "        send({'jsonrpc': '2.0', 'method': 'turn/completed', 'params': {'threadId': thread_id, 'turn': {'id': 'turn-1', 'status': 'completed'}}})",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_claude_code_runner_executes_fake_native_cli(tmp_path: Path) -> None:
+    fake_cli = tmp_path / "fake_native_cli.py"
+    _write_fake_native_cli(fake_cli)
+    module = _load_runner_module("claude-code-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    runner.get_run_api = lambda ctx: None
+
+    ctx = _native_ctx(
+        {
+            "location": "local",
+            "command": sys.executable,
+            "args-json": [str(fake_cli)],
+            "workspace": str(tmp_path),
+            "langbot-assets-enabled": False,
+        }
+    )
+    results = asyncio.run(_collect_async(runner.run(ctx)))
+
+    assert [item.type for item in results] == [
+        "state.updated",
+        "message.delta",
+        "message.completed",
+        "run.completed",
+    ]
+    assert results[2].data["message"]["content"] == "FAKE_NATIVE_OK:hello native"
+    assert results[0].data["key"] == "external.claude_code_session_id"
+
+
+def test_codex_runner_executes_fake_native_cli(tmp_path: Path) -> None:
+    fake_cli = tmp_path / "fake_codex_app_server.py"
+    _write_fake_codex_app_server(fake_cli)
+    module = _load_runner_module("codex-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    runner.get_run_api = lambda ctx: None
+
+    ctx = _native_ctx(
+        {
+            "location": "local",
+            "command": f"{sys.executable} {fake_cli}",
+            "workspace": str(tmp_path),
+            "langbot-assets-enabled": False,
+        }
+    )
+    results = asyncio.run(_collect_async(runner.run(ctx)))
+
+    assert [item.type for item in results] == [
+        "state.updated",
+        "message.delta",
+        "run.completed",
+    ]
+    assert results[1].data["chunk"]["content"] == "FAKE_CODEX_APP_SERVER_OK:hello native"
+    assert results[1].data["chunk"]["is_final"] is True
+    assert results[0].data["key"] == "external.codex_session_id"
+    assert results[0].data["value"] == "thread-123"
+    assert [item.sequence for item in results] == [1, 2, 3]
+
+
+async def _collect_async(stream):
+    return [item async for item in stream]
+
+
 def test_dify_runner_injects_langbot_asset_run_token(monkeypatch) -> None:
     module = _load_runner_module("dify-agent")
     calls = {}
@@ -384,7 +529,7 @@ def test_acp_resource_summary_includes_run_scoped_bridge_tools() -> None:
 
 
 def test_external_service_runners_declare_minimal_plugin_storage_permission() -> None:
-    for plugin_dir in PLUGIN_DIRS - {"acp-agent-runner", "dify-agent"}:
+    for plugin_dir in PLUGIN_DIRS - {"acp-agent-runner", "claude-code-agent", "codex-agent", "dify-agent"}:
         runner = _load_yaml(ROOT / plugin_dir / "components" / "agent_runner" / "default.yaml")
         assert runner["spec"]["permissions"] == {"storage": ["plugin"]}
 

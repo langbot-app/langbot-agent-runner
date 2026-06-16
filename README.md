@@ -36,6 +36,8 @@ LangBot 默认不会内联完整历史。如果运行器需要更多上下文，
 | 插件 | 运行器标识 | 替代对象 | 说明 |
 | --- | --- | --- | --- |
 | `acp-agent-runner` | `plugin:langbot/acp-agent-runner/default` | - | Agent Client Protocol 统一编码智能体集成 |
+| `claude-code-agent` | `plugin:langbot/claude-code-agent/default` | - | Claude Code CLI 专属集成 |
+| `codex-agent` | `plugin:langbot/codex-agent/default` | - | Codex CLI 专属集成 |
 | `deerflow-agent` | `plugin:langbot/deerflow-agent/default` | `deerflow-api` | DeerFlow LangGraph 集成 |
 | `dify-agent` | `plugin:langbot/dify-agent/default` | `dify-service-api` | Dify 应用集成 |
 | `n8n-agent` | `plugin:langbot/n8n-agent/default` | `n8n-service-api` | n8n 工作流 webhook 集成 |
