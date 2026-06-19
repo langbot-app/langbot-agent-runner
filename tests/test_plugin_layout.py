@@ -144,7 +144,7 @@ def test_acp_prompt_blocks_include_runtime_supported_image_data() -> None:
         {
             "attachments": [
                 {
-                    "artifact_type": "image",
+                    "type": "image",
                     "content": "data:image/png;base64,aGVsbG8=",
                 }
             ]
@@ -220,7 +220,7 @@ def test_acp_prompt_blocks_note_unsupported_inline_image() -> None:
 
     blocks = module.acp_prompt_blocks(
         "",
-        {"attachments": [{"artifact_type": "image", "content": "data:image/png;base64,aGVsbG8="}]},
+        {"attachments": [{"type": "image", "content": "data:image/png;base64,aGVsbG8="}]},
         {"image": False, "audio": False, "embedded_context": False},
     )
 

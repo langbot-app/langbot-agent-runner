@@ -61,7 +61,7 @@ def _content_type_from_name(name: typing.Any, default: str) -> str:
 
 
 def _attachment_name(attachment: typing.Any, default: str) -> str:
-    for key in ("name", "file_name", "artifact_id", "id"):
+    for key in ("name", "file_name", "platform_attachment_id", "id"):
         value = _attachment_get(attachment, key)
         if value:
             return str(value)
@@ -72,9 +72,9 @@ def _resource_uri(attachment: typing.Any, name: str) -> str:
     url = _attachment_get(attachment, "url")
     if url:
         return str(url)
-    artifact_id = _attachment_get(attachment, "artifact_id") or _attachment_get(attachment, "id")
-    if artifact_id:
-        return f"langbot-artifact://{urllib.parse.quote(str(artifact_id), safe='')}"
+    path = _attachment_get(attachment, "path")
+    if path:
+        return str(path)
     return f"langbot-input://{urllib.parse.quote(str(name), safe='')}"
 
 
@@ -84,7 +84,7 @@ def _resource_link_block(
     default_name: str,
     default_mime_type: str,
 ) -> dict[str, typing.Any] | None:
-    uri = str(_attachment_get(attachment, "url") or "").strip()
+    uri = str(_attachment_get(attachment, "url") or _attachment_get(attachment, "path") or "").strip()
     if not uri:
         return None
     name = _attachment_name(attachment, default_name)
@@ -114,7 +114,7 @@ def attachments_from_contents(contents: list[typing.Any]) -> list[dict[str, typi
             _, mime_type = _base64_payload_and_mime(content, "image/jpeg")
             attachments.append(
                 {
-                    "artifact_type": "image",
+                    "type": "image",
                     "name": "image",
                     "content": content,
                     "mime_type": mime_type,
@@ -126,7 +126,7 @@ def attachments_from_contents(contents: list[typing.Any]) -> list[dict[str, typi
             if url:
                 attachments.append(
                     {
-                        "artifact_type": "image",
+                        "type": "image",
                         "name": "image",
                         "url": url,
                         "mime_type": _content_type_from_name(url, "image/*"),
@@ -142,7 +142,7 @@ def attachments_from_contents(contents: list[typing.Any]) -> list[dict[str, typi
             )
             attachments.append(
                 {
-                    "artifact_type": "file",
+                    "type": "file",
                     "name": name,
                     "content": content,
                     "mime_type": mime_type,
@@ -155,7 +155,7 @@ def attachments_from_contents(contents: list[typing.Any]) -> list[dict[str, typi
                 name = _content_get(item, "file_name") or "file"
                 attachments.append(
                     {
-                        "artifact_type": "file",
+                        "type": "file",
                         "name": name,
                         "url": url,
                         "mime_type": _content_type_from_name(name, "application/octet-stream"),
@@ -295,13 +295,9 @@ def acp_prompt_blocks(
 
     omitted: dict[str, int] = {"image": 0, "audio": 0, "file": 0}
     for attachment in _input_attachments(input_data):
-        artifact_type = str(
-            _attachment_get(attachment, "artifact_type")
-            or _attachment_get(attachment, "type")
-            or "file"
-        ).lower()
+        attachment_type = str(_attachment_get(attachment, "type") or "file").lower()
 
-        if artifact_type == "image":
+        if attachment_type == "image":
             block = _image_block_from_attachment(attachment, default_name="image")
             if block and prompt_caps.get("image"):
                 blocks.append(block)
@@ -313,7 +309,7 @@ def acp_prompt_blocks(
                 omitted["image"] += 1
             continue
 
-        if artifact_type in {"voice", "audio"}:
+        if attachment_type in {"voice", "audio"}:
             block = _audio_block_from_attachment(attachment)
             if block and prompt_caps.get("audio"):
                 blocks.append(block)

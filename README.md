@@ -12,16 +12,16 @@
 
 - `ctx.event`：事件优先的触发元数据。
 - `ctx.conversation`、`ctx.actor`、`ctx.subject`：当前运行范围的元数据。
-- `ctx.input`：当前用户或事件输入，包含多模态内容和制品 / 文件引用。
+- `ctx.input`：当前用户或事件输入，包含多模态内容和 sandbox path / URL 等附件引用。
 - `ctx.context`：上下文访问句柄、游标、内联策略和可用的拉取接口。
-- `ctx.resources`：当前运行范围内已授权的模型、工具、知识库、文件和存储能力。
+- `ctx.resources`：当前运行范围内已授权的模型、工具、知识库和存储能力。
 - `ctx.state`：宿主端投影给当前运行的小型状态。
 - `ctx.runtime`：截止时间、追踪标识、迁移适配路径中的查询标识，以及宿主端运行时元数据。
 - `ctx.delivery`：当前投递面和流式输出 / 编辑能力。
 - `ctx.config`：运行器绑定配置。
 - `ctx.adapter`：迁移适配字段；它不是协议 v1 核心字段，也不应承载提示词、历史、RAG 结果、工具结构或已授权资源。
 
-LangBot 默认不会内联完整历史。如果运行器需要更多上下文，应使用已授权的拉取接口，例如历史、事件、制品、状态或存储接口。
+LangBot 默认不会内联完整历史。如果运行器需要更多上下文，应使用已授权的拉取接口，例如历史、事件、状态或存储接口。
 
 ## 外部执行器访问 LangBot 资产
 
@@ -57,8 +57,8 @@ LangBot 默认不会内联完整历史。如果运行器需要更多上下文，
 - 当目标平台需要时，从 `ctx.event`、`ctx.actor` 和 `ctx.subject` 读取事件、操作者和对象元数据。
 - 从 `ctx.delivery` 和 `ctx.runtime` 读取投递和运行时决策。
 - 从 `ctx.config` 读取静态运行器绑定配置。
-- 尊重 `ctx.resources`，并通过 `AgentRunAPIProxy` 访问任何由宿主端代理的模型、工具、知识、历史、事件、制品、状态或存储。
-- 使用 `ctx.context` 判断是否可以拉取更多历史、制品或状态。
+- 尊重 `ctx.resources`，并通过 `AgentRunAPIProxy` 访问任何由宿主端代理的模型、工具、知识、历史、事件、状态或存储。
+- 使用 `ctx.context` 判断是否可以拉取更多历史或状态。
 - 当第三方平台的完成事件或响应元数据提供 token usage 时，在 terminal `run.completed` 的 `usage` 字段上报最终聚合 usage；失败前已知的部分 usage 可随 `run.failed` 上报。不能观测 usage 时应省略该字段，表示 unknown，而不是 0。
 
 Pipeline 适配字段只用于适配层：
@@ -80,9 +80,9 @@ Pipeline 适配字段只用于适配层：
 
 - 使用 `AgentRunAPIProxy.state_set(...)` 等宿主端状态接口或插件存储保存外部会话期标识。
 - 只在需要时分页或搜索转录历史。
-- 大型载荷应保存为制品，并通过制品接口读取。
+- 大型载荷应由 sandbox 或目标平台保存为 path、URL 或平台原生引用，不应通过 LangBot 额外维护一套文件持久化接口。
 - 当运行器希望 LangBot 持久化小型 JSON 状态时，返回 `state.updated`。
-- 当运行器生成文件或大型输出时，返回 `artifact.created`。
+- 当运行器生成文件或大型输出时，返回 sandbox path、URL 或平台原生引用。
 
 ## 开发
 
