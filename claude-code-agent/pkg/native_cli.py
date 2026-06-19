@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
 import json
 import os
+import re
 import shlex
+import tempfile
 import time
 import typing
 import uuid
@@ -26,10 +30,26 @@ SESSION_STATE_KEY = "external.claude_code_session_id"
 SUPPORTED_LOCATIONS = {"local", "remote-ssh", "daemon"}
 
 
+_AUTH_ASSIGNMENT_RE = re.compile(r"(?i)(\bAuthorization\b[\"']?\s*[:=]\s*[\"']?)(?:Bearer\s+)?[^\"'\s,}\]]+")
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)(\b(?:run[_-]?token|mcp[_-]?token|langbot_agent_mcp_token|"
+    r"langbot[_-]?asset[_-]?run[_-]?token|api[_-]?key|secret|password)\b"
+    r"[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}\]]+"
+)
+
+
+def _redact_secrets(text: str) -> str:
+    redacted = _AUTH_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", str(text))
+    redacted = _BEARER_RE.sub("Bearer [REDACTED]", redacted)
+    return _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", redacted)
+
+
 class NativeCliError(Exception):
     def __init__(self, message: str, *, code: str = "claude_code.error", retryable: bool = False) -> None:
-        super().__init__(message)
-        self.message = message
+        redacted_message = _redact_secrets(message)
+        super().__init__(redacted_message)
+        self.message = redacted_message
         self.code = code
         self.retryable = retryable
 
@@ -132,6 +152,31 @@ def _mcp_config_json(servers: list[AgentMCPServerConfig], extra_servers: list[ty
     return json.dumps({"mcpServers": mcp_servers}, ensure_ascii=False, separators=(",", ":"))
 
 
+def _write_temp_mcp_config(mcp_config: str, *, directory: str | None = None) -> str:
+    fd, path = tempfile.mkstemp(prefix="langbot-claude-mcp-", suffix=".json", dir=directory)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(mcp_config)
+        return path
+    except Exception:
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        raise
+
+
+def _prompt_stdin(prompt: str) -> bytes:
+    return prompt.encode("utf-8")
+
+
+def _remote_payload_line(value: str) -> bytes:
+    return base64.b64encode(value.encode("utf-8")) + b"\n"
+
+
 def _event_text(event: dict[str, typing.Any]) -> str:
     event_type = str(event.get("type") or event.get("event") or "")
     if event_type in {"session.started", "turn.started", "turn.completed", "mcp.server.started"}:
@@ -162,15 +207,33 @@ def _event_session_id(event: dict[str, typing.Any]) -> str:
     return ""
 
 
-def _remote_shell_command(workspace: str, argv: list[str], env: dict[str, str]) -> str:
-    exports = [f"export {shlex.quote(key)}={shlex.quote(value)}" for key, value in env.items()]
-    parts = [*exports]
+_MCP_CONFIG_ARG_PLACEHOLDER = "__LANGBOT_CLAUDE_MCP_CONFIG_PATH__"
+
+
+def _shell_join_with_mcp_placeholder(argv: list[str]) -> str:
+    return " ".join('"$langbot_mcp_config"' if arg == _MCP_CONFIG_ARG_PLACEHOLDER else shlex.quote(arg) for arg in argv)
+
+
+def _remote_shell_command(workspace: str, argv: list[str], env: dict[str, str], *, read_mcp_from_stdin: bool = False) -> str:
+    parts = ["set -e"]
+    parts.extend(f"export {shlex.quote(key)}={shlex.quote(value)}" for key, value in env.items())
     if workspace:
         quoted_workspace = shlex.quote(workspace)
         parts.append(f"mkdir -p {quoted_workspace}")
         parts.append(f"cd {quoted_workspace}")
-    parts.append(f"exec {shlex.join(argv)}")
-    return f"bash -lc {shlex.quote(' && '.join(parts))}"
+    if read_mcp_from_stdin:
+        parts.extend(
+            [
+                'langbot_mcp_config="$(mktemp "${TMPDIR:-/tmp}/langbot-claude-mcp.XXXXXX.json")"',
+                'chmod 600 "$langbot_mcp_config"',
+                'trap \'rm -f "$langbot_mcp_config"\' EXIT',
+                'IFS= read -r langbot_mcp_config_b64 || langbot_mcp_config_b64=""',
+                '[ -n "$langbot_mcp_config_b64" ] && printf %s "$langbot_mcp_config_b64" | base64 -d > "$langbot_mcp_config" || printf %s "{}" > "$langbot_mcp_config"',
+            ]
+        )
+    exec_prefix = "" if read_mcp_from_stdin else "exec "
+    parts.append(f"{exec_prefix}{_shell_join_with_mcp_placeholder(argv)}")
+    return f"bash -lc {shlex.quote(chr(10).join(parts))}"
 
 
 def _input_text(ctx: AgentRunContext) -> str:
@@ -222,13 +285,12 @@ class NativeClaudeCodeRunner(AgentRunner):
             return stored, False
         return str(uuid.uuid4()), True
 
-    def _argv(self, config: dict[str, typing.Any], *, prompt: str, session_id: str, mcp_config: str) -> list[str]:
+    def _argv(self, config: dict[str, typing.Any], *, session_id: str, mcp_config_path: str) -> list[str]:
         argv = [*_parse_args(config["command"]), *config["args"], "-p", "--verbose", "--output-format", "stream-json"]
-        if mcp_config:
-            argv.extend(["--strict-mcp-config", "--mcp-config", mcp_config])
+        if mcp_config_path:
+            argv.extend(["--strict-mcp-config", "--mcp-config", mcp_config_path])
         if session_id:
             argv.extend(["--session-id", session_id])
-        argv.append(prompt)
         return argv
 
     def _mcp_access(self, ctx: AgentRunContext, config: dict[str, typing.Any]) -> AgentRunMCPAccess | None:
@@ -274,19 +336,36 @@ class NativeClaudeCodeRunner(AgentRunner):
         session_id: str,
     ) -> typing.AsyncGenerator[AgentRunResult, None]:
         access = self._mcp_access(ctx, config)
+        mcp_config_path = ""
         try:
             mcp_servers = [access.server_config] if access and access.server_config else []
             mcp_config = _mcp_config_json(mcp_servers, config["mcp_servers"]) if mcp_servers or config["mcp_servers"] else ""
-            argv = self._argv(config, prompt=prompt, session_id=session_id, mcp_config=mcp_config)
+            if mcp_config and config["location"] == "local":
+                mcp_config_path = _write_temp_mcp_config(mcp_config)
+            elif mcp_config:
+                mcp_config_path = _MCP_CONFIG_ARG_PLACEHOLDER
+            argv = self._argv(config, session_id=session_id, mcp_config_path=mcp_config_path)
             env = {**os.environ, **config["env"]}
             command = argv[0]
             args = argv[1:]
             cwd = config["workspace"] if config["location"] == "local" else None
+            initial_stdin = _prompt_stdin(prompt)
             if config["location"] == "remote-ssh":
                 ssh_args = ["-T", "-p", str(config["ssh_port"])]
                 if access and access.reverse_tunnel:
                     ssh_args.extend(access.reverse_tunnel.ssh_args())
-                ssh_args.extend([config["ssh_target"], _remote_shell_command(config["workspace"], argv, config["env"])])
+                initial_stdin = (_remote_payload_line(mcp_config) if mcp_config else b"") + _prompt_stdin(prompt)
+                ssh_args.extend(
+                    [
+                        config["ssh_target"],
+                        _remote_shell_command(
+                            config["workspace"],
+                            argv,
+                            config["env"],
+                            read_mcp_from_stdin=bool(mcp_config),
+                        ),
+                    ]
+                )
                 command = "ssh"
                 args = ssh_args
             async for result in _run_cli_process(
@@ -298,9 +377,13 @@ class NativeClaudeCodeRunner(AgentRunner):
                 timeout=config["timeout"],
                 streaming=config["streaming"],
                 expected_session_id=session_id,
+                initial_stdin=initial_stdin,
             ):
                 yield result
         finally:
+            if mcp_config_path and mcp_config_path != _MCP_CONFIG_ARG_PLACEHOLDER:
+                with contextlib.suppress(OSError):
+                    os.unlink(mcp_config_path)
             if access is not None:
                 access.stop()
 
@@ -357,6 +440,7 @@ class NativeClaudeCodeDaemon(AgentRuntimeDaemonClient):
                 proxy.start()
                 mcp_servers.append(proxy.mcp_server())
             mcp_config = _mcp_config_json(mcp_servers, list(config.get("mcp_servers") or [])) if mcp_servers else ""
+            mcp_config_path = _write_temp_mcp_config(mcp_config) if mcp_config else ""
             argv = [
                 *_parse_args(config.get("command") or "claude"),
                 *list(config.get("args") or []),
@@ -365,22 +449,35 @@ class NativeClaudeCodeDaemon(AgentRuntimeDaemonClient):
                 "--output-format",
                 "stream-json",
             ]
-            if mcp_config:
-                argv.extend(["--strict-mcp-config", "--mcp-config", mcp_config])
+            if mcp_config_path:
+                argv.extend(["--strict-mcp-config", "--mcp-config", mcp_config_path])
             session_id = str(payload.get("session_id") or "")
             if session_id:
                 argv.extend(["--session-id", session_id])
-            argv.append(str(payload.get("prompt") or ""))
-            async for event in _run_cli_process_events(
-                argv[0],
-                argv[1:],
-                cwd=str(config.get("workspace") or os.getcwd()),
-                env={**os.environ, **{str(k): str(v) for k, v in dict(config.get("env") or {}).items()}},
-                timeout=float(config.get("timeout") or 300.0),
-                streaming=bool(config.get("streaming", True)),
-                expected_session_id=session_id,
-            ):
-                await self.emit_event(job_id, event)
+            try:
+                async for event in _run_cli_process_events(
+                    argv[0],
+                    argv[1:],
+                    cwd=str(config.get("workspace") or os.getcwd()),
+                    env={**os.environ, **{str(k): str(v) for k, v in dict(config.get("env") or {}).items()}},
+                    timeout=float(config.get("timeout") or 300.0),
+                    streaming=bool(config.get("streaming", True)),
+                    expected_session_id=session_id,
+                    initial_stdin=_prompt_stdin(str(payload.get("prompt") or "")),
+                ):
+                    await self.emit_event(job_id, event)
+            except NativeCliError as exc:
+                await self.emit_event(
+                    job_id,
+                    {
+                        "type": "run.failed",
+                        "data": {"error": exc.message, "code": exc.code, "retryable": exc.retryable},
+                    },
+                )
+            finally:
+                if mcp_config_path:
+                    with contextlib.suppress(OSError):
+                        os.unlink(mcp_config_path)
         finally:
             if proxy is not None:
                 proxy.stop()
@@ -396,18 +493,23 @@ async def _run_cli_process(
     timeout: float,
     streaming: bool,
     expected_session_id: str,
+    initial_stdin: bytes = b"",
 ) -> typing.AsyncGenerator[AgentRunResult, None]:
-    async for event in _run_cli_process_events(
-        command,
-        args,
-        cwd=cwd,
-        env=env,
-        timeout=timeout,
-        streaming=streaming,
-        expected_session_id=expected_session_id,
-    ):
-        event.setdefault("run_id", ctx.run_id)
-        yield AgentRunResult.model_validate(event)
+    try:
+        async for event in _run_cli_process_events(
+            command,
+            args,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            streaming=streaming,
+            expected_session_id=expected_session_id,
+            initial_stdin=initial_stdin,
+        ):
+            event.setdefault("run_id", ctx.run_id)
+            yield AgentRunResult.model_validate(event)
+    except NativeCliError as exc:
+        yield AgentRunResult.run_failed(ctx.run_id, error=exc.message, code=exc.code, retryable=exc.retryable)
 
 
 async def _run_cli_process_events(
@@ -419,16 +521,24 @@ async def _run_cli_process_events(
     timeout: float,
     streaming: bool,
     expected_session_id: str,
+    initial_stdin: bytes = b"",
 ) -> typing.AsyncGenerator[dict[str, typing.Any], None]:
-    process = await asyncio.create_subprocess_exec(
-        command,
-        *args,
-        cwd=cwd,
-        env=env,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            command,
+            *args,
+            cwd=cwd,
+            env=env,
+            stdin=asyncio.subprocess.PIPE if initial_stdin else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise NativeCliError(f"Claude Code command not found: {command}", code="claude_code.command_not_found") from exc
+    except PermissionError as exc:
+        raise NativeCliError(f"Claude Code command is not executable: {command}", code="claude_code.permission_denied") from exc
+    except OSError as exc:
+        raise NativeCliError(f"Failed to start Claude Code command: {exc}", code="claude_code.start_failed") from exc
     assert process.stdout is not None
     assert process.stderr is not None
     deadline = time.monotonic() + timeout
@@ -436,6 +546,13 @@ async def _run_cli_process_events(
     final_parts: list[str] = []
     stderr_task = asyncio.create_task(process.stderr.read())
     try:
+        if initial_stdin:
+            assert process.stdin is not None
+            process.stdin.write(initial_stdin)
+            await process.stdin.drain()
+            process.stdin.close()
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                await process.stdin.wait_closed()
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -471,14 +588,15 @@ async def _run_cli_process_events(
                         },
                     }
         returncode = await asyncio.wait_for(process.wait(), timeout=max(0.1, deadline - time.monotonic()))
-        stderr = (await stderr_task).decode("utf-8", errors="replace").strip()
+        stderr = _redact_secrets((await stderr_task).decode("utf-8", errors="replace").strip())
         if returncode != 0:
             raise NativeCliError(stderr or f"Claude Code exited with status {returncode}", code="claude_code.process_failed")
         final_text = "".join(final_parts).strip()
         if not final_text:
             raise NativeCliError("Claude Code returned no assistant text", code="claude_code.empty_response")
-        yield {"type": "message.completed", "data": {"message": {"role": "assistant", "content": final_text}}}
-        yield {"type": "run.completed", "data": {"finish_reason": "stop"}}
+        final_message = {"role": "assistant", "content": final_text}
+        yield {"type": "message.completed", "data": {"message": final_message}}
+        yield {"type": "run.completed", "data": {"finish_reason": "stop", "message": final_message}}
     finally:
         if not stderr_task.done():
             stderr_task.cancel()

@@ -47,12 +47,19 @@ class AsyncWeKnoraClient:
         if description:
             payload["description"] = description
 
-        async with httpx.AsyncClient(trust_env=True, timeout=timeout) as http_client:
-            response = await http_client.post(
-                self._url("/sessions"),
-                headers=self._headers(),
-                json=payload,
-            )
+        try:
+            async with httpx.AsyncClient(trust_env=True, timeout=timeout) as http_client:
+                response = await http_client.post(
+                    self._url("/sessions"),
+                    headers=self._headers(),
+                    json=payload,
+                )
+        except httpx.TimeoutException:
+            raise WeKnoraAPIError(
+                f"WeKnora create session timed out after {timeout}s",
+                code="weknora.timeout",
+                retryable=True,
+            ) from None
 
         if response.status_code not in (200, 201):
             raise WeKnoraAPIError(
@@ -145,33 +152,41 @@ class AsyncWeKnoraClient:
         payload: dict[str, typing.Any],
         timeout: float,
     ) -> typing.AsyncGenerator[dict[str, typing.Any], None]:
-        async with httpx.AsyncClient(trust_env=True, timeout=timeout) as http_client:
-            async with http_client.stream(
-                "POST",
-                self._url(path),
-                headers=self._headers(),
-                json=payload,
-            ) as response:
-                async for line in response.aiter_lines():
+        try:
+            async with httpx.AsyncClient(trust_env=True, timeout=timeout) as http_client:
+                async with http_client.stream(
+                    "POST",
+                    self._url(path),
+                    headers=self._headers(),
+                    json=payload,
+                ) as response:
                     if response.status_code != 200:
+                        body = await response.aread()
                         raise WeKnoraAPIError(
-                            f"WeKnora request failed: status={response.status_code}, body={line}",
+                            f"WeKnora request failed: status={response.status_code}, body={body.decode('utf-8', errors='replace')[:200]}",
                             code="weknora.http_error",
                         )
 
-                    line = line.strip()
-                    if not line:
-                        continue
-                    if line.startswith("data:"):
-                        line = line[5:].strip()
-                    if not line:
-                        continue
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if line.startswith("data:"):
+                            line = line[5:].strip()
+                        if not line:
+                            continue
 
-                    try:
-                        data = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
 
-                    yield data
-                    if data.get("response_type") == "error":
-                        return
+                        yield data
+                        if data.get("response_type") == "error":
+                            return
+        except httpx.TimeoutException:
+            raise WeKnoraAPIError(
+                f"WeKnora request timed out after {timeout}s",
+                code="weknora.timeout",
+                retryable=True,
+            ) from None

@@ -40,7 +40,6 @@ class _StreamState:
         self.baseline_initialized = False
         self.has_values_text = False
         self.run_values_messages: list[dict[str, typing.Any]] = []
-        self.timed_out = False
 
 
 def _content_get(content: typing.Any, key: str, default: typing.Any = None) -> typing.Any:
@@ -334,7 +333,7 @@ class DefaultAgentRunner(AgentRunner):
             state.clarification_text = maybe_clarification
         return None
 
-    def _build_final_text(self, state: _StreamState, timeout: int) -> str:
+    def _build_final_text(self, state: _StreamState) -> str:
         if state.clarification_text:
             return state.clarification_text
 
@@ -342,15 +341,10 @@ class DefaultAgentRunner(AgentRunner):
         if latest_ai:
             text = stream_utils.extract_text(latest_ai.get("content"))
             if text:
-                if state.timed_out:
-                    text += f"\n\nDeerFlow stream timed out after {timeout}s. Returning partial result."
                 return text
 
         if state.latest_text:
-            text = state.latest_text
-            if state.timed_out:
-                text += f"\n\nDeerFlow stream timed out after {timeout}s. Returning partial result."
-            return text
+            return state.latest_text
 
         failure_text = stream_utils.build_task_failure_summary(state.task_failures)
         if failure_text:
@@ -363,7 +357,12 @@ class DefaultAgentRunner(AgentRunner):
         try:
             config = self._validate_config(ctx)
         except DeerFlowConfigError as e:
-            yield AgentRunResult.run_failed(ctx.run_id, error=e.message, code=e.code)
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
+                error=e.message,
+                code=e.code,
+                retryable=getattr(e, "retryable", False),
+            )
             return
 
         client = AsyncDeerFlowClient(
@@ -398,7 +397,12 @@ class DefaultAgentRunner(AgentRunner):
             )
             yield AgentRunResult.run_completed(ctx.run_id)
         except DeerFlowAPIError as e:
-            yield AgentRunResult.run_failed(ctx.run_id, error=e.message, code=e.code)
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
+                error=e.message,
+                code=e.code,
+                retryable=getattr(e, "retryable", False),
+            )
             return
         except Exception as e:
             logger.exception(f"DeerFlow runner unexpected error: {e}")
@@ -462,9 +466,13 @@ class DefaultAgentRunner(AgentRunner):
                     break
         except TimeoutError:
             logger.warning(f"DeerFlow stream timed out after {config['timeout']}s for thread_id={thread_id}")
-            state.timed_out = True
+            raise DeerFlowAPIError(
+                f"DeerFlow stream timed out after {config['timeout']}s",
+                code="deerflow.timeout",
+                retryable=True,
+            ) from None
 
-        final_text = self._build_final_text(state, config["timeout"])
+        final_text = self._build_final_text(state)
         yield AgentRunResult.message_delta(
             ctx.run_id,
             MessageChunk(role="assistant", content=final_text, is_final=True),
@@ -507,7 +515,11 @@ class DefaultAgentRunner(AgentRunner):
                     break
         except TimeoutError:
             logger.warning(f"DeerFlow stream timed out after {config['timeout']}s for thread_id={thread_id}")
-            state.timed_out = True
+            raise DeerFlowAPIError(
+                f"DeerFlow stream timed out after {config['timeout']}s",
+                code="deerflow.timeout",
+                retryable=True,
+            ) from None
 
-        final_text = self._build_final_text(state, config["timeout"])
+        final_text = self._build_final_text(state)
         return Message(role="assistant", content=final_text)

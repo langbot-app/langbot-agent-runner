@@ -98,46 +98,37 @@ class DefaultAgentRunner(AgentRunner):
             return f"{actor.actor_type}_{actor.actor_id}"
         return f"user_{ctx.run_id}"
 
-    def _get_conversation_id(self, ctx: AgentRunContext) -> str:
-        """Get or create conversation ID.
+    def _get_or_create_state_id(
+        self,
+        ctx: AgentRunContext,
+        key: str,
+        prefix: str,
+    ) -> tuple[str, bool]:
+        """Get or create a runner-owned external identifier.
 
         Priority:
-        1. ctx.state.conversation["external.conversation_id"] (persistent)
-        2. ctx.conversation.conversation_id (from host)
-        3. Generate new UUID
+        1. ctx.state.conversation[key] (persistent)
+        2. Generate new UUID
 
-        Returns the conversation ID to use for the webhook call.
+        Returns (identifier, created).
         """
-        # Priority 1: State (persistent external conversation ID)
-        external_conv_id = ctx.state.conversation.get("external.conversation_id")
-        if external_conv_id:
-            return external_conv_id
-
-        # Priority 2: Context conversation ID
-        if ctx.conversation and ctx.conversation.conversation_id:
-            return ctx.conversation.conversation_id
-
-        # Priority 3: Generate new conversation ID
-        return str(uuid.uuid4())
-
-    def _get_session_id(self, ctx: AgentRunContext) -> str:
-        """Get session ID from context."""
-        if ctx.conversation and ctx.conversation.session_id:
-            return ctx.conversation.session_id
-        return ctx.run_id
+        existing = ctx.state.conversation.get(key)
+        if existing:
+            return str(existing), False
+        return f"{prefix}_{uuid.uuid4().hex}", True
 
     def _build_payload(
         self,
         ctx: AgentRunContext,
         user_message: str,
         conversation_id: str,
+        session_id: str,
     ) -> dict[str, typing.Any]:
         """Build webhook payload.
 
         Includes standard fields and merges adapter params.
         """
         user_tag = self._get_user_tag(ctx)
-        session_id = self._get_session_id(ctx)
         params = _get_adapter_params(ctx)
 
         payload = {
@@ -190,11 +181,21 @@ class DefaultAgentRunner(AgentRunner):
         # Get text input
         user_message = ctx.input.to_text()
 
-        # Get or create conversation ID
-        conversation_id = self._get_conversation_id(ctx)
+        # Get or create runner-owned external IDs. Do not expose LangBot-local
+        # conversation/session ids as workflow identifiers.
+        conversation_id, conversation_created = self._get_or_create_state_id(
+            ctx,
+            "external.conversation_id",
+            "n8n_conversation",
+        )
+        session_id, session_created = self._get_or_create_state_id(
+            ctx,
+            "external.session_id",
+            "n8n_session",
+        )
 
         # Build payload
-        payload = self._build_payload(ctx, user_message, conversation_id)
+        payload = self._build_payload(ctx, user_message, conversation_id, session_id)
 
         auth_type = config["auth_type"]
         auth_config = config["auth_config"]
@@ -260,13 +261,18 @@ class DefaultAgentRunner(AgentRunner):
             )
             return
 
-        # Store conversation_id in state for next run (scoped state)
-        # Only update if we used a new conversation ID
-        if conversation_id:
+        if conversation_created:
             yield AgentRunResult.state_updated(
                 ctx.run_id,
                 "external.conversation_id",
                 conversation_id,
+                scope="conversation",
+            )
+        if session_created:
+            yield AgentRunResult.state_updated(
+                ctx.run_id,
+                "external.session_id",
+                session_id,
                 scope="conversation",
             )
 

@@ -98,8 +98,8 @@ spec:
       default: '请回答用户的问题。'
   capabilities:
     streaming: true
-    tool_calling: true
-    knowledge_retrieval: true
+    tool_calling: false
+    knowledge_retrieval: false
     multimodal_input: false
     interrupt: false
   permissions:

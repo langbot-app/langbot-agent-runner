@@ -5,8 +5,11 @@ This module provides a minimal DashScope API client using the official dashscope
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import queue
 import re
+import threading
 import typing
 
 from dashscope import Application
@@ -17,9 +20,10 @@ logger = logging.getLogger(__name__)
 class DashScopeAPIError(Exception):
     """DashScope API error."""
 
-    def __init__(self, message: str, code: str = "dashscope.api_error"):
+    def __init__(self, message: str, code: str = "dashscope.api_error", retryable: bool = False):
         self.message = message
         self.code = code
+        self.retryable = retryable
         super().__init__(message)
 
 
@@ -93,11 +97,13 @@ class DashScopeClient:
         app_id: str,
         app_type: str = "agent",
         references_quote: str = "参考资料来自:",
+        timeout: float = 120.0,
     ):
         self.api_key = api_key
         self.app_id = app_id
         self.app_type = app_type
         self.references_quote = references_quote
+        self.timeout = timeout
 
     def call_agent(
         self,
@@ -158,3 +164,74 @@ class DashScopeClient:
         )
 
         yield from response
+
+    async def iter_agent(
+        self,
+        prompt: str,
+        session_id: str = "",
+        enable_thinking: bool = True,
+    ) -> typing.AsyncGenerator[dict[str, typing.Any], None]:
+        async for chunk in _iterate_sync_in_thread(
+            lambda: self.call_agent(prompt=prompt, session_id=session_id, enable_thinking=enable_thinking),
+            timeout=self.timeout,
+        ):
+            yield chunk
+
+    async def iter_workflow(
+        self,
+        prompt: str,
+        session_id: str = "",
+        biz_params: dict[str, typing.Any] | None = None,
+    ) -> typing.AsyncGenerator[dict[str, typing.Any], None]:
+        async for chunk in _iterate_sync_in_thread(
+            lambda: self.call_workflow(prompt=prompt, session_id=session_id, biz_params=biz_params),
+            timeout=self.timeout,
+        ):
+            yield chunk
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    return isinstance(exc, TimeoutError) or "timeout" in exc.__class__.__name__.lower()
+
+
+async def _iterate_sync_in_thread(
+    factory: typing.Callable[[], typing.Iterable[dict[str, typing.Any]]],
+    *,
+    timeout: float,
+) -> typing.AsyncGenerator[dict[str, typing.Any], None]:
+    """Iterate a blocking provider stream without blocking the event loop."""
+    sentinel = object()
+    output: queue.Queue[typing.Any] = queue.Queue()
+
+    def _worker() -> None:
+        try:
+            for item in factory():
+                output.put(item)
+        except BaseException as exc:
+            output.put(exc)
+        finally:
+            output.put(sentinel)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    while True:
+        try:
+            item = await asyncio.wait_for(asyncio.to_thread(output.get), timeout=timeout)
+        except TimeoutError:
+            raise DashScopeAPIError(
+                f"DashScope API request timed out after {timeout}s",
+                code="dashscope.timeout",
+                retryable=True,
+            ) from None
+        if item is sentinel:
+            break
+        if isinstance(item, BaseException):
+            if _is_timeout_error(item):
+                raise DashScopeAPIError(
+                    f"DashScope API request timed out after {timeout}s",
+                    code="dashscope.timeout",
+                    retryable=True,
+                ) from None
+            raise item
+        yield item

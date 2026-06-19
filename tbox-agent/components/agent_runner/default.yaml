@@ -24,6 +24,13 @@ spec:
       type: string
       required: true
       default: ''
+    - name: timeout
+      label:
+        en_US: Timeout
+        zh_Hans: 超时时间
+      type: number
+      required: false
+      default: 120
   capabilities:
     streaming: true
     tool_calling: false

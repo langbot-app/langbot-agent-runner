@@ -350,7 +350,7 @@ spec:
         zh_Hans: 初始化超时
       type: integer
       required: false
-      default: 30
+      default: 120
     - name: create-session-if-missing
       label:
         en_US: Create Session If Missing

@@ -1,3 +1,2 @@
 pydantic>=2.0.0
-aiohttp>=3.9.0
 tboxsdk>=0.1.0

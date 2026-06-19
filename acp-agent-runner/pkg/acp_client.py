@@ -6,7 +6,22 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import typing
+
+_AUTH_ASSIGNMENT_RE = re.compile(r"(?i)(\bAuthorization\b[\"']?\s*[:=]\s*[\"']?)(?:Bearer\s+)?[^\"'\s,}\]]+")
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)(\b(?:run[_-]?token|mcp[_-]?token|langbot_agent_mcp_token|"
+    r"langbot[_-]?asset[_-]?run[_-]?token|api[_-]?key|secret|password)\b"
+    r"[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}\]]+"
+)
+
+
+def _redact_secrets(text: str) -> str:
+    redacted = _AUTH_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", str(text))
+    redacted = _BEARER_RE.sub("Bearer [REDACTED]", redacted)
+    return _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", redacted)
 
 
 class AcpError(Exception):
@@ -85,7 +100,7 @@ class AcpStdioClient:
 
     @property
     def stderr_tail(self) -> str:
-        return self._stderr[-self.stderr_limit :]
+        return _redact_secrets(self._stderr[-self.stderr_limit :])
 
     async def __aenter__(self) -> AcpStdioClient:
         await self.start()

@@ -293,8 +293,7 @@ class DefaultAgentRunner(AgentRunner):
 
         Priority:
         1. ctx.state.conversation["external.conversation_id"]
-        2. ctx.conversation.conversation_id
-        3. Empty string (start new conversation)
+        2. Empty string (start new conversation)
         """
         # Priority 1: State (persistent external conversation ID)
         external_conv_id = ctx.state.conversation.get("external.conversation_id")
@@ -304,6 +303,18 @@ class DefaultAgentRunner(AgentRunner):
         # Host conversation ids are LangBot-local and are not guaranteed to be
         # Dify UUIDs. Passing them to Dify makes first-turn Debug Chat fail.
         return ""
+
+    def _get_or_create_state_id(
+        self,
+        ctx: AgentRunContext,
+        key: str,
+        prefix: str,
+    ) -> tuple[str, bool]:
+        """Return a runner-owned external id stored under conversation state."""
+        state_value = ctx.state.conversation.get(key)
+        if state_value:
+            return str(state_value), False
+        return f"{prefix}_{uuid.uuid4().hex}", True
 
     def _get_dify_inputs(self, ctx: AgentRunContext) -> dict[str, typing.Any]:
         """Get inputs for Dify API from adapter params.
@@ -362,10 +373,17 @@ class DefaultAgentRunner(AgentRunner):
             try:
                 file_bytes = _decode_content(_attachment_get(attachment, "content"))
                 if not file_bytes:
-                    continue
+                    raise DifyAPIError(
+                        f"Input attachment {_attachment_get(attachment, 'name', 'file')} has no uploadable content",
+                        code="dify.input_error",
+                    )
 
                 file_name = _attachment_get(attachment, "name") or "file"
-                content_type = _attachment_get(attachment, "content_type") or "application/octet-stream"
+                content_type = (
+                    _attachment_get(attachment, "content_type")
+                    or _attachment_get(attachment, "mime_type")
+                    or "application/octet-stream"
+                )
 
                 # Determine Dify file type from content type
                 if content_type.startswith("image/"):
@@ -388,9 +406,23 @@ class DefaultAgentRunner(AgentRunner):
                             "upload_file_id": file_id,
                         }
                     )
+                else:
+                    raise DifyAPIError(
+                        f"Dify file upload response missing file id for {file_name}",
+                        code="dify.input_error",
+                    )
+            except DifyAPIError as e:
+                if e.code == "dify.input_error":
+                    raise
+                raise DifyAPIError(
+                    f"Failed to upload input attachment {_attachment_get(attachment, 'name', 'file')}: {e.message}",
+                    code="dify.input_error",
+                ) from None
             except Exception as e:
-                logger.warning(f"Failed to upload file {_attachment_get(attachment, 'name', 'file')}: {e}")
-                # Continue without this file rather than failing the entire request
+                raise DifyAPIError(
+                    f"Failed to upload input attachment {_attachment_get(attachment, 'name', 'file')}: {e}",
+                    code="dify.input_error",
+                ) from None
 
         return uploaded_files
 
@@ -426,11 +458,12 @@ class DefaultAgentRunner(AgentRunner):
         input_text = self._get_input_text(ctx, config["base_prompt"])
         remove_think = config["remove_think"]
 
-        # Upload files if present
-        files = await self._upload_input_files(ctx, client, user)
-
         asset_registration = None
         try:
+            # Upload files if present. Multimodal inputs must not silently
+            # degrade to text-only when the provider upload path fails.
+            files = await self._upload_input_files(ctx, client, user)
+
             # Get inputs from params (read-only, do not modify), optionally adding
             # the run-scoped LangBot asset token expected by Dify MCP tools.
             asset_registration, inputs = self._prepare_dify_inputs(ctx, config)
@@ -649,16 +682,18 @@ class DefaultAgentRunner(AgentRunner):
         - langbot_conversation_id: from state or ctx.conversation
         - langbot_msg_create_time: adapter params msg_create_time
         """
-        # Derive legacy input variables from context (Dify-specific, not SDK protocol)
-        session_id = ctx.conversation.session_id if ctx.conversation else None
-        session_id = session_id or ctx.run_id
-
-        # Get conversation_id from state or context for Dify workflow inputs.
-        external_conv_id = ctx.state.conversation.get("external.conversation_id")
-        if not external_conv_id and ctx.conversation:
-            external_conv_id = ctx.conversation.conversation_id
-        if not external_conv_id:
-            external_conv_id = ctx.run_id
+        # Derive Dify workflow compatibility variables from runner-owned state,
+        # not LangBot's conversation/session ids.
+        session_id, session_created = self._get_or_create_state_id(
+            ctx,
+            "external.workflow_session_id",
+            "dify_session",
+        )
+        external_conv_id, conversation_created = self._get_or_create_state_id(
+            ctx,
+            "external.workflow_conversation_id",
+            "dify_conversation",
+        )
 
         msg_create_time = inputs.get("msg_create_time")
 
@@ -753,6 +788,21 @@ class DefaultAgentRunner(AgentRunner):
             raise DifyAPIError(
                 "Dify workflow returned no response",
                 code="dify.api_error",
+            )
+
+        if session_created:
+            yield AgentRunResult.state_updated(
+                ctx.run_id,
+                "external.workflow_session_id",
+                session_id,
+                scope="conversation",
+            )
+        if conversation_created:
+            yield AgentRunResult.state_updated(
+                ctx.run_id,
+                "external.workflow_conversation_id",
+                external_conv_id,
+                scope="conversation",
             )
 
         yield AgentRunResult.run_completed(ctx.run_id, usage=usage)

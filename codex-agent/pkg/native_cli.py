@@ -10,7 +10,6 @@ import os
 import re
 import shlex
 import shutil
-import time
 import typing
 import uuid
 from pathlib import Path
@@ -31,10 +30,26 @@ SESSION_STATE_KEY = "external.codex_session_id"
 SUPPORTED_LOCATIONS = {"local", "remote-ssh", "daemon"}
 
 
+_AUTH_ASSIGNMENT_RE = re.compile(r"(?i)(\bAuthorization\b[\"']?\s*[:=]\s*[\"']?)(?:Bearer\s+)?[^\"'\s,}\]]+")
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)(\b(?:run[_-]?token|mcp[_-]?token|langbot_agent_mcp_token|"
+    r"langbot[_-]?asset[_-]?run[_-]?token|api[_-]?key|secret|password)\b"
+    r"[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}\]]+"
+)
+
+
+def _redact_secrets(text: str) -> str:
+    redacted = _AUTH_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", str(text))
+    redacted = _BEARER_RE.sub("Bearer [REDACTED]", redacted)
+    return _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", redacted)
+
+
 class NativeCliError(Exception):
     def __init__(self, message: str, *, code: str = "codex.error", retryable: bool = False) -> None:
-        super().__init__(message)
-        self.message = message
+        redacted_message = _redact_secrets(message)
+        super().__init__(redacted_message)
+        self.message = redacted_message
         self.code = code
         self.retryable = retryable
 
@@ -194,6 +209,10 @@ def _safe_home_name(value: str) -> str:
     return safe[:96] or f"run-{uuid.uuid4()}"
 
 
+def _per_run_home_name(home_key: str) -> str:
+    return f"{_safe_home_name(home_key)}-{uuid.uuid4().hex[:12]}"
+
+
 def _shared_codex_home(env: dict[str, str]) -> Path:
     configured = env.get("CODEX_HOME") or os.environ.get("CODEX_HOME")
     if configured:
@@ -212,8 +231,9 @@ def _symlink_or_copy_file(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def _symlink_dir(src: Path, dst: Path) -> None:
-    src.mkdir(parents=True, exist_ok=True)
+def _symlink_or_copy_dir(src: Path, dst: Path) -> None:
+    if not src.exists() or not src.is_dir():
+        return
     if dst.exists() or dst.is_symlink():
         if dst.is_symlink():
             dst.unlink()
@@ -221,7 +241,7 @@ def _symlink_dir(src: Path, dst: Path) -> None:
     try:
         dst.symlink_to(src, target_is_directory=True)
     except OSError:
-        dst.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, dst, dirs_exist_ok=True)
 
 
 def _prepare_local_codex_home(
@@ -232,14 +252,17 @@ def _prepare_local_codex_home(
 ) -> tuple[dict[str, str], str]:
     workspace_path = Path(workspace).expanduser().resolve()
     workspace_path.mkdir(parents=True, exist_ok=True)
-    home = workspace_path / ".langbot-codex-home" / _safe_home_name(home_key)
-    if home.exists() or home.is_symlink():
-        shutil.rmtree(home)
-    home.mkdir(parents=True, exist_ok=True)
+    home_parent = workspace_path / ".langbot-codex-home"
+    home_parent.mkdir(parents=True, exist_ok=True)
+    home = home_parent / _per_run_home_name(home_key)
+    home.mkdir(mode=0o700)
+    home.chmod(0o700)
 
     shared = _shared_codex_home(env)
     _symlink_or_copy_file(shared / "auth.json", home / "auth.json")
-    _symlink_dir(shared / "sessions", home / "sessions")
+    shared_sessions = shared / "sessions"
+    shared_sessions.mkdir(parents=True, exist_ok=True)
+    _symlink_or_copy_dir(shared_sessions, home / "sessions")
     for name in ("config.json", "config.toml", "instructions.md"):
         src = shared / name
         if src.exists():
@@ -258,37 +281,49 @@ def _prepare_local_codex_home(
     return updated_env, str(workspace_path)
 
 
-def _remote_codex_home_lines(home_key: str, mcp_toml: str) -> list[str]:
-    run_home = f".langbot-codex-home/{_safe_home_name(home_key)}"
+def _remote_mcp_stdin_prelude(mcp_toml: str) -> bytes:
+    if not mcp_toml:
+        return b""
+    return base64.b64encode(("\n" + mcp_toml).encode("utf-8")) + b"\n"
+
+
+def _remote_codex_home_lines(home_key: str, *, read_mcp_from_stdin: bool) -> list[str]:
+    run_home = f".langbot-codex-home/{_per_run_home_name(home_key)}"
     lines = [
         f"run_home={shlex.quote(run_home)}",
         'shared_home="${CODEX_HOME:-$HOME/.codex}"',
-        'rm -rf "$run_home"',
         'mkdir -p "$run_home"',
-        '[ -f "$shared_home/auth.json" ] && ln -s "$shared_home/auth.json" "$run_home/auth.json" || :',
+        '[ -f "$shared_home/auth.json" ] && { ln -s "$shared_home/auth.json" "$run_home/auth.json" 2>/dev/null || cp "$shared_home/auth.json" "$run_home/auth.json"; } || :',
         'mkdir -p "$shared_home/sessions"',
-        'ln -s "$shared_home/sessions" "$run_home/sessions" 2>/dev/null || :',
+        'ln -s "$shared_home/sessions" "$run_home/sessions" 2>/dev/null || cp -R "$shared_home/sessions" "$run_home/sessions"',
         '[ -f "$shared_home/config.json" ] && cp "$shared_home/config.json" "$run_home/config.json" || :',
         '[ -f "$shared_home/config.toml" ] && cp "$shared_home/config.toml" "$run_home/config.toml" || :',
         '[ -f "$shared_home/instructions.md" ] && cp "$shared_home/instructions.md" "$run_home/instructions.md" || :',
         'touch "$run_home/config.toml"',
     ]
-    if mcp_toml:
-        encoded = base64.b64encode(("\n" + mcp_toml).encode("utf-8")).decode("ascii")
-        lines.append(f"printf %s {shlex.quote(encoded)} | base64 -d >> \"$run_home/config.toml\"")
+    if read_mcp_from_stdin:
+        lines.append('IFS= read -r langbot_mcp_config_b64 || langbot_mcp_config_b64=""')
+        lines.append('[ -n "$langbot_mcp_config_b64" ] && printf %s "$langbot_mcp_config_b64" | base64 -d >> "$run_home/config.toml" || :')
         lines.append('chmod 600 "$run_home/config.toml"')
     lines.append('export CODEX_HOME="$PWD/$run_home"')
     return lines
 
 
-def _remote_shell_command(workspace: str, argv: list[str], env: dict[str, str], *, home_key: str, mcp_toml: str) -> str:
+def _remote_shell_command(
+    workspace: str,
+    argv: list[str],
+    env: dict[str, str],
+    *,
+    home_key: str,
+    read_mcp_from_stdin: bool = False,
+) -> str:
     lines = ["set -e"]
     lines.extend(f"export {shlex.quote(key)}={shlex.quote(value)}" for key, value in env.items())
     if workspace:
         quoted_workspace = shlex.quote(workspace)
         lines.append(f"mkdir -p {quoted_workspace}")
         lines.append(f"cd {quoted_workspace}")
-    lines.extend(_remote_codex_home_lines(home_key, mcp_toml))
+    lines.extend(_remote_codex_home_lines(home_key, read_mcp_from_stdin=read_mcp_from_stdin))
     lines.append(f"exec {shlex.join(argv)}")
     return f"bash -lc {shlex.quote(chr(10).join(lines))}"
 
@@ -393,10 +428,12 @@ class NativeCodexRunner(AgentRunner):
             command = argv[0]
             args = argv[1:]
             cwd = config["workspace"] if config["location"] == "local" else None
+            initial_stdin = b""
             if config["location"] == "remote-ssh":
                 ssh_args = ["-T", "-p", str(config["ssh_port"])]
                 if access and access.reverse_tunnel:
                     ssh_args.extend(access.reverse_tunnel.ssh_args())
+                initial_stdin = _remote_mcp_stdin_prelude(mcp_toml)
                 ssh_args.extend(
                     [
                         config["ssh_target"],
@@ -405,7 +442,7 @@ class NativeCodexRunner(AgentRunner):
                             argv,
                             config["env"],
                             home_key=session_id or ctx.run_id,
-                            mcp_toml=mcp_toml,
+                            read_mcp_from_stdin=bool(mcp_toml),
                         ),
                     ]
                 )
@@ -424,6 +461,7 @@ class NativeCodexRunner(AgentRunner):
                 resume_session_id=session_id,
                 prompt=prompt,
                 agent_cwd=config["workspace"],
+                initial_stdin=initial_stdin,
             ):
                 yield result
         finally:
@@ -491,18 +529,28 @@ class NativeCodexDaemon(AgentRuntimeDaemonClient):
                 env,
                 mcp_toml,
             )
-            async for event in _run_cli_process_events(
-                argv[0],
-                argv[1:],
-                cwd=cwd,
-                env=env,
-                timeout=float(config.get("timeout") or 300.0),
-                streaming=bool(config.get("streaming", True)),
-                resume_session_id=session_id,
-                prompt=str(payload.get("prompt") or ""),
-                agent_cwd=cwd,
-            ):
-                await self.emit_event(job_id, event)
+            try:
+                async for event in _run_cli_process_events(
+                    argv[0],
+                    argv[1:],
+                    cwd=cwd,
+                    env=env,
+                    timeout=float(config.get("timeout") or 300.0),
+                    streaming=bool(config.get("streaming", True)),
+                    resume_session_id=session_id,
+                    prompt=str(payload.get("prompt") or ""),
+                    agent_cwd=cwd,
+                    initial_stdin=b"",
+                ):
+                    await self.emit_event(job_id, event)
+            except NativeCliError as exc:
+                await self.emit_event(
+                    job_id,
+                    {
+                        "type": "run.failed",
+                        "data": {"error": exc.message, "code": exc.code, "retryable": exc.retryable},
+                    },
+                )
         finally:
             if proxy is not None:
                 proxy.stop()
@@ -520,20 +568,25 @@ async def _run_cli_process(
     resume_session_id: str,
     prompt: str,
     agent_cwd: str,
+    initial_stdin: bytes = b"",
 ) -> typing.AsyncGenerator[AgentRunResult, None]:
-    async for event in _run_cli_process_events(
-        command,
-        args,
-        cwd=cwd,
-        env=env,
-        timeout=timeout,
-        streaming=streaming,
-        resume_session_id=resume_session_id,
-        prompt=prompt,
-        agent_cwd=agent_cwd,
-    ):
-        event.setdefault("run_id", ctx.run_id)
-        yield AgentRunResult.model_validate(event)
+    try:
+        async for event in _run_cli_process_events(
+            command,
+            args,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            streaming=streaming,
+            resume_session_id=resume_session_id,
+            prompt=prompt,
+            agent_cwd=agent_cwd,
+            initial_stdin=initial_stdin,
+        ):
+            event.setdefault("run_id", ctx.run_id)
+            yield AgentRunResult.model_validate(event)
+    except NativeCliError as exc:
+        yield AgentRunResult.run_failed(ctx.run_id, error=exc.message, code=exc.code, retryable=exc.retryable)
 
 
 def _extract_nested_string(data: dict[str, typing.Any], *keys: str) -> str:
@@ -857,16 +910,24 @@ async def _run_cli_process_events(
     resume_session_id: str,
     prompt: str,
     agent_cwd: str,
+    initial_stdin: bytes = b"",
 ) -> typing.AsyncGenerator[dict[str, typing.Any], None]:
-    process = await asyncio.create_subprocess_exec(
-        command,
-        *args,
-        cwd=cwd,
-        env=env,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            command,
+            *args,
+            cwd=cwd,
+            env=env,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise NativeCliError(f"Codex command not found: {command}", code="codex.command_not_found") from exc
+    except PermissionError as exc:
+        raise NativeCliError(f"Codex command is not executable: {command}", code="codex.permission_denied") from exc
+    except OSError as exc:
+        raise NativeCliError(f"Failed to start Codex command: {exc}", code="codex.start_failed") from exc
     assert process.stdout is not None
     assert process.stdin is not None
     assert process.stderr is not None
@@ -875,6 +936,9 @@ async def _run_cli_process_events(
     stderr_task = asyncio.create_task(process.stderr.read())
     result_sequence = 0
     try:
+        if initial_stdin:
+            process.stdin.write(initial_stdin)
+            await process.stdin.drain()
         async with asyncio.timeout(timeout):
             await client.initialize()
             thread_id = await client.start_or_resume_thread(resume_session_id, agent_cwd)
@@ -891,7 +955,7 @@ async def _run_cli_process_events(
                 event["sequence"] = result_sequence
                 yield event
         await _shutdown_app_server(process, reader_task)
-        stderr = (await stderr_task).decode("utf-8", errors="replace").strip()
+        stderr = _redact_secrets((await stderr_task).decode("utf-8", errors="replace").strip())
         if process.returncode not in (0, None):
             raise NativeCliError(stderr or f"Codex app-server exited with status {process.returncode}", code="codex.process_failed")
         if client.final_error:
@@ -916,15 +980,15 @@ async def _run_cli_process_events(
                         }
                     },
                 }
-        else:
-            result_sequence += 1
-            yield {
-                "type": "message.completed",
-                "sequence": result_sequence,
-                "data": {"message": {"role": "assistant", "content": final_text}},
-            }
         result_sequence += 1
-        yield {"type": "run.completed", "sequence": result_sequence, "data": {"finish_reason": "stop"}}
+        final_message = {"role": "assistant", "content": final_text}
+        yield {
+            "type": "message.completed",
+            "sequence": result_sequence,
+            "data": {"message": final_message},
+        }
+        result_sequence += 1
+        yield {"type": "run.completed", "sequence": result_sequence, "data": {"finish_reason": "stop", "message": final_message}}
     except TimeoutError as exc:
         process.kill()
         raise NativeCliError("Codex app-server run timed out", code="codex.timeout", retryable=True) from exc

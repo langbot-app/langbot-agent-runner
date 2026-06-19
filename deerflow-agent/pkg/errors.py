@@ -16,6 +16,7 @@ class DeerFlowAPIError(Exception):
         url: str = "",
         thread_id: str | None = None,
         code: str = "deerflow.api_error",
+        retryable: bool = False,
     ) -> None:
         self.message = message
         self.operation = operation
@@ -24,6 +25,7 @@ class DeerFlowAPIError(Exception):
         self.url = url
         self.thread_id = thread_id
         self.code = code
+        self.retryable = retryable
 
         if message:
             super().__init__(message)

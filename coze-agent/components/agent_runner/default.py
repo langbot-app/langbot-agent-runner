@@ -210,19 +210,15 @@ class DefaultAgentRunner(AgentRunner):
 
         Priority:
         1. ctx.state.conversation["external.conversation_id"]
-        2. ctx.conversation.conversation_id
-        3. None (start new conversation)
+        2. None (start new conversation)
         """
         # Priority 1: State (persistent external conversation ID)
         external_conv_id = ctx.state.conversation.get("external.conversation_id")
         if external_conv_id:
             return external_conv_id
 
-        # Priority 2: Context conversation ID (may be provided by host)
-        if ctx.conversation and ctx.conversation.conversation_id:
-            return ctx.conversation.conversation_id
-
-        # Priority 3: None (start new Coze conversation)
+        # Start a new Coze provider conversation. Do not send LangBot-local
+        # conversation ids as provider conversation ids.
         return None
 
     async def _build_additional_messages(
@@ -244,8 +240,12 @@ class DefaultAgentRunner(AgentRunner):
 
         for attachment in attachments:
             try:
-                attachment_type = _attachment_get(attachment, "type")
-                content_type = _attachment_get(attachment, "content_type") or "application/octet-stream"
+                attachment_type = _attachment_get(attachment, "type") or _attachment_get(attachment, "artifact_type")
+                content_type = (
+                    _attachment_get(attachment, "content_type")
+                    or _attachment_get(attachment, "mime_type")
+                    or "application/octet-stream"
+                )
 
                 if attachment_type == "image_base64" or (
                     attachment_type == "image" and content_type.startswith("image/")
@@ -254,7 +254,10 @@ class DefaultAgentRunner(AgentRunner):
                     file_bytes = _decode_content(_attachment_get(attachment, "content"))
 
                     if not file_bytes:
-                        continue
+                        raise CozeAPIError(
+                            f"Input image {_attachment_get(attachment, 'name', 'image.png')} has no uploadable content",
+                            code="coze.input_error",
+                        )
 
                     file_id = await client.upload_file(file_bytes, _attachment_get(attachment, "name") or "image.png")
                     content_parts.append({"type": "image", "file_id": file_id})
@@ -262,22 +265,32 @@ class DefaultAgentRunner(AgentRunner):
                 # Handle file type
                 elif attachment_type == "file":
                     file_bytes = _decode_content(_attachment_get(attachment, "content"))
-                    if file_bytes:
-                        file_id = await client.upload_file(file_bytes, _attachment_get(attachment, "name") or "file")
-                        content_parts.append({"type": "file", "file_id": file_id})
+                    if not file_bytes:
+                        raise CozeAPIError(
+                            f"Input file {_attachment_get(attachment, 'name', 'file')} has no uploadable content",
+                            code="coze.input_error",
+                        )
+                    file_id = await client.upload_file(file_bytes, _attachment_get(attachment, "name") or "file")
+                    content_parts.append({"type": "file", "file_id": file_id})
 
                 # Handle image type (direct bytes)
                 elif attachment_type == "image":
                     file_bytes = _decode_content(_attachment_get(attachment, "content"))
-                    if file_bytes:
-                        file_id = await client.upload_file(
-                            file_bytes, _attachment_get(attachment, "name") or "image.png"
+                    if not file_bytes:
+                        raise CozeAPIError(
+                            f"Input image {_attachment_get(attachment, 'name', 'image.png')} has no uploadable content",
+                            code="coze.input_error",
                         )
-                        content_parts.append({"type": "image", "file_id": file_id})
+                    file_id = await client.upload_file(file_bytes, _attachment_get(attachment, "name") or "image.png")
+                    content_parts.append({"type": "image", "file_id": file_id})
 
+            except CozeAPIError:
+                raise
             except Exception as e:
-                logger.warning(f"Failed to process attachment {_attachment_get(attachment, 'name', 'attachment')}: {e}")
-                # Continue without this attachment
+                raise CozeAPIError(
+                    f"Failed to upload input attachment {_attachment_get(attachment, 'name', 'attachment')}: {e}",
+                    code="coze.input_error",
+                ) from None
 
         # Add text content
         text = ctx.input.to_text()

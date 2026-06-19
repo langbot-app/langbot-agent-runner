@@ -147,6 +147,7 @@ class DefaultAgentRunner(AgentRunner):
             "api_key": api_key,
             "app_id": app_id,
             "references_quote": config.get("references_quote", "参考资料来自:"),
+            "timeout": float(config.get("timeout", 120)),
         }
 
     def _get_session_id(self, ctx: AgentRunContext) -> str:
@@ -189,6 +190,7 @@ class DefaultAgentRunner(AgentRunner):
             app_id=config["app_id"],
             app_type=config["app_type"],
             references_quote=config["references_quote"],
+            timeout=config["timeout"],
         )
 
         input_text = self._get_input_text(ctx)
@@ -207,6 +209,7 @@ class DefaultAgentRunner(AgentRunner):
                 ctx.run_id,
                 error=e.message,
                 code=e.code,
+                retryable=getattr(e, "retryable", False),
             )
             return
         except Exception as e:
@@ -236,17 +239,19 @@ class DefaultAgentRunner(AgentRunner):
         think_start = False
         think_end = False
         usage: dict[str, typing.Any] | None = None
+        has_response = False
 
         # Check if thinking should be enabled (default: True)
         # Can be controlled via adapter params if needed
         enable_thinking = True
 
-        # Use sync iterator since dashscope SDK is synchronous
-        for chunk in client.call_agent(
+        async for chunk in client.iter_agent(
             prompt=input_text,
             session_id=session_id,
             enable_thinking=enable_thinking,
         ):
+            if not chunk:
+                continue
             # Check for API errors
             status_code = chunk.get("status_code")
             if status_code != 200:
@@ -301,6 +306,7 @@ class DefaultAgentRunner(AgentRunner):
 
             # Yield periodically or on final chunk
             if pending_content:
+                has_response = True
                 yield AgentRunResult.message_delta(
                     ctx.run_id,
                     MessageChunk(
@@ -311,6 +317,12 @@ class DefaultAgentRunner(AgentRunner):
                 )
                 if is_final:
                     pending_content = ""
+
+        if not has_response:
+            raise DashScopeAPIError(
+                "DashScope API returned no response",
+                code="dashscope.empty_response",
+            )
 
         # Update state with session_id for next run
         if final_session_id:
@@ -338,16 +350,18 @@ class DefaultAgentRunner(AgentRunner):
         references_dict: dict[str, str] = {}
         final_session_id = session_id
         usage: dict[str, typing.Any] | None = None
+        has_response = False
 
         # Get business parameters from context
         biz_params = self._get_biz_params(ctx)
 
-        # Use sync iterator since dashscope SDK is synchronous
-        for chunk in client.call_workflow(
+        async for chunk in client.iter_workflow(
             prompt=input_text,
             session_id=session_id,
             biz_params=biz_params,
         ):
+            if not chunk:
+                continue
             # Check for API errors
             status_code = chunk.get("status_code")
             if status_code != 200:
@@ -394,6 +408,7 @@ class DefaultAgentRunner(AgentRunner):
 
             # Yield periodically or on final chunk
             if pending_content:
+                has_response = True
                 yield AgentRunResult.message_delta(
                     ctx.run_id,
                     MessageChunk(
@@ -404,6 +419,12 @@ class DefaultAgentRunner(AgentRunner):
                 )
                 if is_final:
                     pending_content = ""
+
+        if not has_response:
+            raise DashScopeAPIError(
+                "DashScope workflow returned no response",
+                code="dashscope.empty_response",
+            )
 
         # Update state with session_id for next run
         if final_session_id:

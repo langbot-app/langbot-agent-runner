@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import queue
 import tempfile
+import threading
 import typing
 
 logger = logging.getLogger(__name__)
@@ -16,9 +18,10 @@ logger = logging.getLogger(__name__)
 class TboxAPIError(Exception):
     """Tbox API error."""
 
-    def __init__(self, message: str, code: str = "tbox.api_error"):
+    def __init__(self, message: str, code: str = "tbox.api_error", retryable: bool = False):
         self.message = message
         self.code = code
+        self.retryable = retryable
         super().__init__(message)
 
 
@@ -41,13 +44,14 @@ class AsyncTboxClient:
     The underlying tboxsdk is synchronous, so we run blocking calls in a thread pool.
     """
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, timeout: float = 120.0):
         """Initialize the Tbox client.
 
         Args:
             api_key: Tbox authorization token
         """
         self.api_key = api_key
+        self.timeout = timeout
         self._sync_client = None
 
     def _get_client(self):
@@ -74,7 +78,7 @@ class AsyncTboxClient:
         import os
 
         # Tbox SDK requires a file path, so we write to a temp file
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _upload_sync():
             client = self._get_client()
@@ -93,9 +97,21 @@ class AsyncTboxClient:
                     os.unlink(tmp_path)
 
         try:
-            file_id = await loop.run_in_executor(None, _upload_sync)
+            file_id = await asyncio.wait_for(loop.run_in_executor(None, _upload_sync), timeout=self.timeout)
             return file_id
+        except TimeoutError:
+            raise TboxAPIError(
+                f"Tbox file upload timed out after {self.timeout}s",
+                code="tbox.timeout",
+                retryable=True,
+            ) from None
         except Exception as e:
+            if _is_timeout_error(e):
+                raise TboxAPIError(
+                    f"Tbox file upload timed out after {self.timeout}s",
+                    code="tbox.timeout",
+                    retryable=True,
+                ) from None
             raise TboxAPIError(f"Tbox file upload failed: {e}", code="tbox.upload_error") from e
 
     async def chat(
@@ -126,8 +142,6 @@ class AsyncTboxClient:
         """
         from tboxsdk.model.file import File, FileType
 
-        loop = asyncio.get_event_loop()
-
         # Convert file dicts to Tbox File objects
         tbox_files = None
         if files:
@@ -148,15 +162,61 @@ class AsyncTboxClient:
             )
 
         try:
-            response = await loop.run_in_executor(None, _chat_sync)
-
             if stream:
-                # response is a generator of chunks
-                for chunk in response:
+                async for chunk in _iterate_sync_in_thread(_chat_sync, timeout=self.timeout):
                     yield chunk
             else:
-                # response is a single dict
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(_chat_sync),
+                    timeout=self.timeout,
+                )
                 yield response
 
+        except TimeoutError:
+            raise TboxAPIError(
+                f"Tbox chat request timed out after {self.timeout}s",
+                code="tbox.timeout",
+                retryable=True,
+            ) from None
         except Exception as e:
+            if _is_timeout_error(e):
+                raise TboxAPIError(
+                    f"Tbox chat request timed out after {self.timeout}s",
+                    code="tbox.timeout",
+                    retryable=True,
+                ) from None
             raise TboxAPIError(f"Tbox chat request failed: {e}", code="tbox.chat_error") from e
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    return isinstance(exc, TimeoutError) or "timeout" in exc.__class__.__name__.lower()
+
+
+async def _iterate_sync_in_thread(
+    factory: typing.Callable[[], typing.Iterable[dict[str, typing.Any]]],
+    *,
+    timeout: float,
+) -> typing.AsyncGenerator[dict[str, typing.Any], None]:
+    """Iterate a blocking provider stream without blocking the event loop."""
+    sentinel = object()
+    output: queue.Queue[typing.Any] = queue.Queue()
+
+    def _worker() -> None:
+        try:
+            for item in factory():
+                output.put(item)
+        except BaseException as exc:
+            output.put(exc)
+        finally:
+            output.put(sentinel)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    while True:
+        item = await asyncio.wait_for(asyncio.to_thread(output.get), timeout=timeout)
+        if item is sentinel:
+            break
+        if isinstance(item, BaseException):
+            raise item
+        yield item

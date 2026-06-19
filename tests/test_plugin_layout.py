@@ -546,11 +546,30 @@ def _write_fake_native_cli(path: Path) -> None:
             [
                 "from __future__ import annotations",
                 "import json",
+                "import os",
                 "import sys",
                 "session_id = 'missing-session'",
                 "if '--session-id' in sys.argv:",
                 "    session_id = sys.argv[sys.argv.index('--session-id') + 1]",
-                "prompt = sys.argv[-1]",
+                "prompt = sys.stdin.read()",
+                "if 'hello native' in sys.argv:",
+                "    print('prompt leaked into argv', file=sys.stderr)",
+                "    raise SystemExit(2)",
+                "if '--mcp-config' in sys.argv:",
+                "    config_path = sys.argv[sys.argv.index('--mcp-config') + 1]",
+                "    if config_path.startswith('{'):",
+                "        print('mcp config passed as raw json', file=sys.stderr)",
+                "        raise SystemExit(3)",
+                "    if os.stat(config_path).st_mode & 0o777 != 0o600:",
+                "        print('mcp config mode is not 0600', file=sys.stderr)",
+                "        raise SystemExit(4)",
+                "    config = open(config_path, encoding='utf-8').read()",
+                "    if 'Bearer test-secret-token' not in config:",
+                "        print('mcp config file missing expected token', file=sys.stderr)",
+                "        raise SystemExit(5)",
+                "    if 'Bearer test-secret-token' in ' '.join(sys.argv):",
+                "        print('mcp token leaked into argv', file=sys.stderr)",
+                "        raise SystemExit(6)",
                 "print(json.dumps({'type': 'session.started', 'session_id': session_id}))",
                 "print(json.dumps({'type': 'message.completed', 'text': 'FAKE_NATIVE_OK:' + prompt}))",
             ]
@@ -626,6 +645,42 @@ def test_claude_code_runner_executes_fake_native_cli(tmp_path: Path) -> None:
     assert results[0].data["key"] == "external.claude_code_session_id"
 
 
+def test_claude_code_runner_passes_mcp_config_by_temp_file(tmp_path: Path) -> None:
+    fake_cli = tmp_path / "fake_native_cli.py"
+    _write_fake_native_cli(fake_cli)
+    module = _load_runner_module("claude-code-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    runner.get_run_api = lambda ctx: None
+
+    ctx = _native_ctx(
+        {
+            "location": "local",
+            "command": sys.executable,
+            "args-json": [str(fake_cli)],
+            "workspace": str(tmp_path),
+            "langbot-assets-enabled": False,
+            "mcp-servers-json": [
+                {
+                    "name": "langbot",
+                    "type": "http",
+                    "url": "http://127.0.0.1:1234/mcp",
+                    "headers": {"Authorization": "Bearer test-secret-token"},
+                }
+            ],
+        }
+    )
+    results = asyncio.run(_collect_async(runner.run(ctx)))
+
+    assert [item.type for item in results] == [
+        "state.updated",
+        "message.delta",
+        "message.completed",
+        "run.completed",
+    ]
+    assert results[2].data["message"]["content"] == "FAKE_NATIVE_OK:hello native"
+
+
 def test_codex_runner_executes_fake_native_cli(tmp_path: Path) -> None:
     fake_cli = tmp_path / "fake_codex_app_server.py"
     _write_fake_codex_app_server(fake_cli)
@@ -647,13 +702,164 @@ def test_codex_runner_executes_fake_native_cli(tmp_path: Path) -> None:
     assert [item.type for item in results] == [
         "state.updated",
         "message.delta",
+        "message.completed",
         "run.completed",
     ]
     assert results[1].data["chunk"]["content"] == "FAKE_CODEX_APP_SERVER_OK:hello native"
     assert results[1].data["chunk"]["is_final"] is True
+    assert results[2].data["message"]["content"] == "FAKE_CODEX_APP_SERVER_OK:hello native"
+    assert results[3].data["message"]["content"] == "FAKE_CODEX_APP_SERVER_OK:hello native"
     assert results[0].data["key"] == "external.codex_session_id"
     assert results[0].data["value"] == "thread-123"
-    assert [item.sequence for item in results] == [1, 2, 3]
+    assert [item.sequence for item in results] == [1, 2, 3, 4]
+
+
+def test_codex_local_home_is_unique_per_resumed_run(tmp_path: Path) -> None:
+    module = _load_plugin_module("codex-agent", "pkg/native_cli.py", "native_cli_home")
+    shared_home = tmp_path / "shared-codex"
+    shared_home.mkdir()
+    (shared_home / "auth.json").write_text("{}", encoding="utf-8")
+    (shared_home / "sessions").mkdir()
+    (shared_home / "sessions" / "shared-session.jsonl").write_text("session", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+
+    env_one, _ = module._prepare_local_codex_home(
+        str(workspace),
+        "thread-123",
+        {"CODEX_HOME": str(shared_home)},
+        "",
+    )
+    first_home = Path(env_one["CODEX_HOME"])
+    marker = first_home / "marker.txt"
+    marker.write_text("keep", encoding="utf-8")
+    env_two, _ = module._prepare_local_codex_home(
+        str(workspace),
+        "thread-123",
+        {"CODEX_HOME": str(shared_home)},
+        "",
+    )
+    second_home = Path(env_two["CODEX_HOME"])
+
+    assert first_home != second_home
+    assert first_home.exists()
+    assert second_home.exists()
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert (first_home / "sessions" / "shared-session.jsonl").exists()
+    assert (second_home / "sessions" / "shared-session.jsonl").exists()
+    assert (shared_home / "sessions" / "shared-session.jsonl").read_text(encoding="utf-8") == "session"
+
+
+def test_codex_remote_mcp_config_is_not_embedded_in_ssh_command() -> None:
+    module = _load_plugin_module("codex-agent", "pkg/native_cli.py", "native_cli_remote")
+    mcp_toml = module._mcp_config_toml(
+        {
+            "langbot": {
+                "type": "http",
+                "url": "http://127.0.0.1:1234/mcp",
+                "headers": {"Authorization": "Bearer remote-secret-token"},
+            }
+        }
+    )
+
+    command = module._remote_shell_command(
+        "/workspace",
+        ["codex", "app-server", "--listen", "stdio://"],
+        {},
+        home_key="thread-123",
+        read_mcp_from_stdin=True,
+    )
+
+    assert "remote-secret-token" not in command
+    assert "Authorization" not in command
+    assert b"remote-secret-token" not in module._remote_mcp_stdin_prelude(mcp_toml)
+
+
+def test_native_cli_startup_failures_are_run_failed(tmp_path: Path) -> None:
+    claude_module = _load_runner_module("claude-code-agent")
+    claude_runner = object.__new__(claude_module.DefaultAgentRunner)
+    claude_runner.get_plugin_config = lambda: {}
+    claude_runner.get_run_api = lambda ctx: None
+    claude_results = asyncio.run(
+        _collect_async(
+            claude_runner.run(
+                _native_ctx(
+                    {
+                        "location": "local",
+                        "command": str(tmp_path / "missing-claude"),
+                        "workspace": str(tmp_path),
+                        "langbot-assets-enabled": False,
+                    }
+                )
+            )
+        )
+    )
+
+    assert [item.type for item in claude_results] == ["state.updated", "run.failed"]
+    assert claude_results[-1].data["code"] == "claude_code.command_not_found"
+
+    codex_module = _load_runner_module("codex-agent")
+    codex_runner = object.__new__(codex_module.DefaultAgentRunner)
+    codex_runner.get_plugin_config = lambda: {}
+    codex_runner.get_run_api = lambda ctx: None
+    codex_results = asyncio.run(
+        _collect_async(
+            codex_runner.run(
+                _native_ctx(
+                    {
+                        "location": "local",
+                        "command": str(tmp_path / "missing-codex"),
+                        "workspace": str(tmp_path),
+                        "langbot-assets-enabled": False,
+                    }
+                )
+            )
+        )
+    )
+
+    assert [item.type for item in codex_results] == ["run.failed"]
+    assert codex_results[0].data["code"] == "codex.command_not_found"
+
+
+def test_claude_code_runner_redacts_stderr_secrets(tmp_path: Path) -> None:
+    fake_cli = tmp_path / "fake_secret_stderr.py"
+    fake_cli.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "import sys",
+                "sys.stdin.read()",
+                "print('Authorization: Bearer stderr-secret-token run_token=run-secret-value', file=sys.stderr)",
+                "raise SystemExit(7)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    module = _load_runner_module("claude-code-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    runner.get_run_api = lambda ctx: None
+
+    results = asyncio.run(
+        _collect_async(
+            runner.run(
+                _native_ctx(
+                    {
+                        "location": "local",
+                        "command": sys.executable,
+                        "args-json": [str(fake_cli)],
+                        "workspace": str(tmp_path),
+                        "langbot-assets-enabled": False,
+                    }
+                )
+            )
+        )
+    )
+
+    assert [item.type for item in results] == ["state.updated", "run.failed"]
+    error = results[-1].data["error"]
+    assert "stderr-secret-token" not in error
+    assert "run-secret-value" not in error
+    assert "[REDACTED]" in error
 
 
 async def _collect_async(stream):
@@ -779,6 +985,11 @@ def test_acp_resource_summary_includes_run_scoped_bridge_tools() -> None:
         {"tool_name": "langbot_get_tool_detail"},
         {"tool_name": "langbot_call_tool"},
     ]
+
+    prompt = object.__new__(module.DefaultAgentRunner)._with_run_scope_prompt(ctx, "call langbot_get_current_event")
+    assert "Call LangBot MCP tools directly in this ACP session" in prompt
+    assert "do not launch background agents, subagents, or tasks" in prompt
+    assert "Wait for each LangBot MCP tool result before replying" in prompt
 
 
 def test_external_service_runners_declare_minimal_plugin_storage_permission() -> None:

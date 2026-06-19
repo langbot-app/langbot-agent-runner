@@ -191,6 +191,7 @@ class DefaultAgentRunner(AgentRunner):
         return {
             "app_id": app_id,
             "api_key": api_key,
+            "timeout": float(config.get("timeout", 120)),
         }
 
     def _get_user_id(self, ctx: AgentRunContext) -> str:
@@ -234,10 +235,17 @@ class DefaultAgentRunner(AgentRunner):
             try:
                 file_bytes = _decode_content(_attachment_get(attachment, "content"))
                 if not file_bytes:
-                    continue
+                    raise TboxAPIError(
+                        f"Input attachment {_attachment_get(attachment, 'name', 'file')} has no uploadable content",
+                        code="tbox.input_error",
+                    )
 
                 file_name = _attachment_get(attachment, "name") or "file"
-                content_type = _attachment_get(attachment, "content_type") or "application/octet-stream"
+                content_type = (
+                    _attachment_get(attachment, "content_type")
+                    or _attachment_get(attachment, "mime_type")
+                    or "application/octet-stream"
+                )
 
                 # Tbox primarily supports images
                 if content_type.startswith("image/"):
@@ -249,9 +257,28 @@ class DefaultAgentRunner(AgentRunner):
                                 "type": "image",
                             }
                         )
+                    else:
+                        raise TboxAPIError(
+                            f"Tbox file upload response missing file id for {file_name}",
+                            code="tbox.input_error",
+                        )
+                elif content_type:
+                    raise TboxAPIError(
+                        f"Tbox only supports image attachments, got {content_type}",
+                        code="tbox.input_error",
+                    )
+            except TboxAPIError as e:
+                if e.code in {"tbox.input_error", "tbox.timeout"}:
+                    raise
+                raise TboxAPIError(
+                    f"Failed to upload input attachment {_attachment_get(attachment, 'name', 'file')}: {e.message}",
+                    code="tbox.input_error",
+                ) from None
             except Exception as e:
-                logger.warning(f"Failed to upload file {_attachment_get(attachment, 'name', 'file')}: {e}")
-                # Continue without this file rather than failing the entire request
+                raise TboxAPIError(
+                    f"Failed to upload input attachment {_attachment_get(attachment, 'name', 'file')}: {e}",
+                    code="tbox.input_error",
+                ) from None
 
         return uploaded_files
 
@@ -281,14 +308,11 @@ class DefaultAgentRunner(AgentRunner):
             )
             return
 
-        client = AsyncTboxClient(api_key=config["api_key"])
+        client = AsyncTboxClient(api_key=config["api_key"], timeout=config["timeout"])
 
         user_id = self._get_user_id(ctx)
         input_text = self._get_input_text(ctx)
         app_id = config["app_id"]
-
-        # Upload files if present
-        files = await self._upload_input_files(ctx, client)
 
         # Get conversation_id from state (not from config!)
         conversation_id = self._get_external_conversation_id(ctx)
@@ -296,6 +320,10 @@ class DefaultAgentRunner(AgentRunner):
         is_stream = self._should_stream(ctx)
 
         try:
+            # Upload files if present. Multimodal inputs must not silently
+            # degrade to text-only when provider upload fails.
+            files = await self._upload_input_files(ctx, client)
+
             async for result in self._run_chat(
                 ctx, client, app_id, user_id, input_text, conversation_id, files, is_stream
             ):
@@ -305,6 +333,7 @@ class DefaultAgentRunner(AgentRunner):
                 ctx.run_id,
                 error=e.message,
                 code=e.code,
+                retryable=getattr(e, "retryable", False),
             )
             return
         except Exception as e:

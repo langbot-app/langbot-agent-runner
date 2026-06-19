@@ -428,6 +428,8 @@ class DefaultAgentRunner(AgentRunner):
             "System instructions from LangBot:\n"
             f"- Current LangBot run_id: {ctx.run_id}\n"
             "- The injected LangBot MCP server is already scoped to this run. Follow its tool schemas exactly.\n"
+            "- Call LangBot MCP tools directly in this ACP session; do not launch background agents, subagents, or tasks to call them.\n"
+            "- Wait for each LangBot MCP tool result before replying to the user.\n"
             "- Do not add run_id or other fields to MCP tool calls unless the tool schema asks for them.\n"
             "- If a LangBot MCP call is rejected, stop and report the error.\n"
             f"- Authorized LangBot resources and MCP bridge tools for this run: {resources}\n\n"

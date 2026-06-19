@@ -81,12 +81,21 @@ class AsyncDeerFlowClient:
         url = f"{self.api_base}/api/langgraph/threads"
         payload = {"metadata": {}}
 
-        async with httpx.AsyncClient(trust_env=True, timeout=timeout) as http_client:
-            response = await http_client.post(
-                url,
-                headers=self.headers,
-                json=payload,
-            )
+        try:
+            async with httpx.AsyncClient(trust_env=True, timeout=timeout) as http_client:
+                response = await http_client.post(
+                    url,
+                    headers=self.headers,
+                    json=payload,
+                )
+        except httpx.TimeoutException:
+            raise DeerFlowAPIError(
+                f"DeerFlow create thread timed out after {timeout}s",
+                operation="create thread",
+                url=url,
+                code="deerflow.timeout",
+                retryable=True,
+            ) from None
         if response.status_code not in (200, 201):
             raise DeerFlowAPIError(
                 operation="create thread",
@@ -112,53 +121,63 @@ class AsyncDeerFlowClient:
             pool=timeout,
         )
 
-        async with httpx.AsyncClient(trust_env=True, timeout=stream_timeout) as http_client:
-            async with http_client.stream(
-                "POST",
-                url,
-                headers={
-                    **self.headers,
-                    "Accept": "text/event-stream",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            ) as response:
-                if response.status_code != 200:
-                    body = await response.aread()
-                    raise DeerFlowAPIError(
-                        operation="runs/stream request",
-                        status=response.status_code,
-                        body=body.decode("utf-8", errors="replace"),
-                        url=url,
-                        thread_id=thread_id,
-                        code="deerflow.http_error",
-                    )
+        try:
+            async with httpx.AsyncClient(trust_env=True, timeout=stream_timeout) as http_client:
+                async with http_client.stream(
+                    "POST",
+                    url,
+                    headers={
+                        **self.headers,
+                        "Accept": "text/event-stream",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                ) as response:
+                    if response.status_code != 200:
+                        body = await response.aread()
+                        raise DeerFlowAPIError(
+                            operation="runs/stream request",
+                            status=response.status_code,
+                            body=body.decode("utf-8", errors="replace"),
+                            url=url,
+                            thread_id=thread_id,
+                            code="deerflow.http_error",
+                        )
 
-                decoder = codecs.getincrementaldecoder("utf-8")("replace")
-                buffer = ""
+                    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+                    buffer = ""
 
-                async for chunk in response.aiter_bytes(8192):
-                    buffer += _normalize_sse_newlines(decoder.decode(chunk))
+                    async for chunk in response.aiter_bytes(8192):
+                        buffer += _normalize_sse_newlines(decoder.decode(chunk))
 
+                        while "\n\n" in buffer:
+                            block, buffer = buffer.split("\n\n", 1)
+                            parsed = _parse_sse_block(block)
+                            if parsed is not None:
+                                yield parsed
+
+                        if len(buffer) > SSE_MAX_BUFFER_CHARS:
+                            parsed = _parse_sse_block(buffer)
+                            if parsed is not None:
+                                yield parsed
+                            buffer = ""
+
+                    buffer += _normalize_sse_newlines(decoder.decode(b"", final=True))
                     while "\n\n" in buffer:
                         block, buffer = buffer.split("\n\n", 1)
                         parsed = _parse_sse_block(block)
                         if parsed is not None:
                             yield parsed
-
-                    if len(buffer) > SSE_MAX_BUFFER_CHARS:
+                    if buffer.strip():
                         parsed = _parse_sse_block(buffer)
                         if parsed is not None:
                             yield parsed
-                        buffer = ""
-
-                buffer += _normalize_sse_newlines(decoder.decode(b"", final=True))
-                while "\n\n" in buffer:
-                    block, buffer = buffer.split("\n\n", 1)
-                    parsed = _parse_sse_block(block)
-                    if parsed is not None:
-                        yield parsed
-                if buffer.strip():
-                    parsed = _parse_sse_block(buffer)
-                    if parsed is not None:
-                        yield parsed
+        except httpx.TimeoutException:
+            raise DeerFlowAPIError(
+                f"DeerFlow stream timed out after {timeout}s",
+                operation="runs/stream request",
+                url=url,
+                thread_id=thread_id,
+                code="deerflow.timeout",
+                retryable=True,
+            ) from None

@@ -135,7 +135,12 @@ class DefaultAgentRunner(AgentRunner):
             )
             yield AgentRunResult.run_completed(ctx.run_id)
         except WeKnoraAPIError as e:
-            yield AgentRunResult.run_failed(ctx.run_id, error=e.message, code=e.code)
+            yield AgentRunResult.run_failed(
+                ctx.run_id,
+                error=e.message,
+                code=e.code,
+                retryable=getattr(e, "retryable", False),
+            )
             return
         except Exception as e:
             logger.exception(f"WeKnora runner unexpected error: {e}")
@@ -216,7 +221,10 @@ class DefaultAgentRunner(AgentRunner):
                 raise WeKnoraAPIError(f"WeKnora service error: {content}", code="weknora.api_error")
 
         if not saw_chunk:
-            raise WeKnoraAPIError("WeKnora API returned no response", code="weknora.api_error")
+            raise WeKnoraAPIError("WeKnora API returned no response", code="weknora.empty_response")
+
+        if not pending_answer:
+            raise WeKnoraAPIError("WeKnora API returned an empty answer", code="weknora.empty_response")
 
         if pending_answer and (not should_stream or not is_final):
             if should_stream:
@@ -277,7 +285,10 @@ class DefaultAgentRunner(AgentRunner):
                 raise WeKnoraAPIError(f"WeKnora service error: {content}", code="weknora.api_error")
 
         if not saw_chunk:
-            raise WeKnoraAPIError("WeKnora API returned no response", code="weknora.api_error")
+            raise WeKnoraAPIError("WeKnora API returned no response", code="weknora.empty_response")
+
+        if not pending_answer:
+            raise WeKnoraAPIError("WeKnora API returned an empty answer", code="weknora.empty_response")
 
         if pending_answer and (not should_stream or not is_final):
             if should_stream:
