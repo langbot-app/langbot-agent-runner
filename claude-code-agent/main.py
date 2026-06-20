@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from langbot_plugin.api.agent_tools import (
+from langbot_plugin.api.agent_tools.daemon import (
     agent_runtime_daemon_config_from_plugin_config,
     get_agent_runtime_daemon_hub,
 )

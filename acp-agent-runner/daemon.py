@@ -18,7 +18,7 @@ import shlex
 import time
 import typing
 
-from langbot_plugin.api.agent_tools import AgentRuntimeDaemonClient, LocalMCPProxy
+from langbot_plugin.api.agent_tools.daemon import AgentRuntimeDaemonClient, LocalMCPProxy
 from pkg.acp_client import AcpError, AcpStdioClient
 from pkg.prompt import acp_prompt_blocks, has_acp_prompt_input, prompt_capabilities
 

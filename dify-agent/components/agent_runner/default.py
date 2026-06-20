@@ -11,7 +11,7 @@ import logging
 import typing
 import uuid
 
-from langbot_plugin.api.agent_tools import get_default_agent_asset_gateway
+from langbot_plugin.api.agent_tools.asset_gateway import get_default_agent_asset_gateway
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
