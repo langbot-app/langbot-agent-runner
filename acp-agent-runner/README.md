@@ -249,6 +249,8 @@ WebSocket connection back to the plugin. The plugin handles those requests with
 the current run's `AgentRunAPIProxy`, so LangBot assets remain scoped by
 `run_id` and the Host authorization snapshot. The user's workstation does not
 need a public IP or inbound port for this path.
+Runner code should import the SDK proxy from
+`langbot_plugin.api.proxies.agent_run`.
 
 To test the long-lived HTTP MCP gateway path with ACP, set:
 
