@@ -993,7 +993,20 @@ def test_acp_resource_summary_includes_run_scoped_bridge_tools() -> None:
 
 
 def test_external_service_runners_declare_minimal_plugin_storage_permission() -> None:
-    for plugin_dir in PLUGIN_DIRS - {"acp-agent-runner", "claude-code-agent", "codex-agent", "dify-agent"}:
+    # Asset-callback runners legitimately request broader permissions (tools,
+    # knowledge bases, history) for the LangBot Asset Gateway MCP; the rest only
+    # need plugin storage.
+    asset_callback_runners = {
+        "acp-agent-runner",
+        "claude-code-agent",
+        "codex-agent",
+        "dify-agent",
+        "n8n-agent",
+        "coze-agent",
+        "dashscope-agent",
+        "langflow-agent",
+    }
+    for plugin_dir in PLUGIN_DIRS - asset_callback_runners:
         runner = _load_yaml(ROOT / plugin_dir / "components" / "agent_runner" / "default.yaml")
         assert runner["spec"]["permissions"] == {"storage": ["plugin"]}
 
