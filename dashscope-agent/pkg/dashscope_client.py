@@ -110,6 +110,7 @@ class DashScopeClient:
         prompt: str,
         session_id: str = "",
         enable_thinking: bool = True,
+        biz_params: dict[str, typing.Any] | None = None,
     ) -> typing.Any:
         """Call DashScope agent application.
 
@@ -117,11 +118,13 @@ class DashScopeClient:
             prompt: User input text
             session_id: Session ID for multi-turn conversation
             enable_thinking: Whether to enable thinking/reasoning
+            biz_params: Optional business parameters passed to the 百炼 app
+                (e.g. a LangBot asset run token referenced by the app)
 
         Yields:
             Response chunks from DashScope API
         """
-        response = Application.call(
+        call_kwargs: dict[str, typing.Any] = dict(
             api_key=self.api_key,
             app_id=self.app_id,
             prompt=prompt,
@@ -131,6 +134,10 @@ class DashScopeClient:
             enable_thinking=enable_thinking,
             has_thoughts=enable_thinking,
         )
+        if biz_params:
+            call_kwargs["biz_params"] = biz_params
+
+        response = Application.call(**call_kwargs)
 
         yield from response
 
@@ -170,9 +177,15 @@ class DashScopeClient:
         prompt: str,
         session_id: str = "",
         enable_thinking: bool = True,
+        biz_params: dict[str, typing.Any] | None = None,
     ) -> typing.AsyncGenerator[dict[str, typing.Any], None]:
         async for chunk in _iterate_sync_in_thread(
-            lambda: self.call_agent(prompt=prompt, session_id=session_id, enable_thinking=enable_thinking),
+            lambda: self.call_agent(
+                prompt=prompt,
+                session_id=session_id,
+                enable_thinking=enable_thinking,
+                biz_params=biz_params,
+            ),
             timeout=self.timeout,
         ):
             yield chunk

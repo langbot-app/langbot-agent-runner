@@ -169,6 +169,7 @@ class AsyncCozeClient:
         additional_messages: list[dict[str, typing.Any]] | None = None,
         conversation_id: str | None = None,
         auto_save_history: bool = True,
+        custom_variables: dict[str, typing.Any] | None = None,
     ) -> typing.AsyncGenerator[dict[str, typing.Any], None]:
         """Send chat message with streaming response.
 
@@ -182,6 +183,8 @@ class AsyncCozeClient:
             additional_messages: List of message objects with role, content, content_type
             conversation_id: Existing conversation ID for stateful session
             auto_save_history: Whether to save chat history
+            custom_variables: Optional variables referenced by the bot prompt as
+                {{key}} (e.g. a LangBot asset run token)
 
         Yields:
             Dict with 'event' and 'data' keys
@@ -198,6 +201,9 @@ class AsyncCozeClient:
 
         if additional_messages:
             payload["additional_messages"] = additional_messages
+
+        if custom_variables:
+            payload["custom_variables"] = custom_variables
 
         params = {}
         if conversation_id:

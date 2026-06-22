@@ -10,6 +10,7 @@ import logging
 import typing
 import uuid
 
+from langbot_plugin.api.agent_tools.asset_gateway import get_default_agent_asset_gateway
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
@@ -24,6 +25,38 @@ from pkg.langflow_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_LANGBOT_ASSET_TOKEN_INPUT = "langbot_asset_run_token"
+
+
+def _to_bool(value: typing.Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return default
+
+
+def _to_int(value: typing.Any, default: int) -> int:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float(value: typing.Any, default: float) -> float:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 class DefaultAgentRunner(AgentRunner):
@@ -83,7 +116,39 @@ class DefaultAgentRunner(AgentRunner):
             "output_type": config.get("output-type", "chat"),
             "tweaks": tweaks,
             "timeout": float(config.get("timeout", 120)),
+            "langbot_assets_enabled": _to_bool(config.get("langbot-assets-enabled"), False),
+            "asset_gateway_host": str(config.get("langbot-assets-gateway-host") or "0.0.0.0"),
+            "asset_gateway_port": _to_int(config.get("langbot-assets-gateway-port"), 8765),
+            "asset_gateway_request_timeout": _to_float(config.get("langbot-assets-gateway-request-timeout"), 60.0),
+            "asset_gateway_token_ttl": _to_float(config.get("langbot-assets-token-ttl"), 3600.0),
+            "asset_gateway_input_name": str(
+                config.get("langbot-assets-input-name") or DEFAULT_LANGBOT_ASSET_TOKEN_INPUT
+            ),
         }
+
+    def _create_asset_gateway_registration(
+        self,
+        ctx: AgentRunContext,
+        config: dict[str, typing.Any],
+    ):
+        """Register a run-scoped LangBot asset token in the shared MCP gateway.
+
+        The token is injected into the flow via a ``tweaks`` override that sets
+        the ``input_value`` of the component named by ``langbot-assets-input-name``.
+        The flow wires that component into the Agent so it passes the token as the
+        ``run_token`` argument on LangBot Asset Gateway MCP tool calls. The
+        registration must be stopped when the run ends.
+        """
+        gateway = get_default_agent_asset_gateway(
+            host=config["asset_gateway_host"],
+            port=config["asset_gateway_port"],
+            request_timeout=config["asset_gateway_request_timeout"],
+        )
+        return gateway.register_run(
+            self.get_run_api(ctx),
+            ctx,
+            ttl_seconds=config["asset_gateway_token_ttl"],
+        )
 
     def _get_session_id(self, ctx: AgentRunContext) -> str:
         """Get or generate session ID for Langflow.
@@ -144,6 +209,20 @@ class DefaultAgentRunner(AgentRunner):
 
         is_stream = self._should_stream(ctx)
 
+        # Optionally register a run-scoped LangBot asset token and inject it into
+        # the flow via a tweak that sets the target component's input_value. The
+        # flow wires that component into the Agent so it passes the token as the
+        # run_token argument on LangBot Asset Gateway MCP tool calls. The token is
+        # stopped in finally when the run ends.
+        tweaks = config["tweaks"]
+        asset_registration = None
+        if config["langbot_assets_enabled"]:
+            asset_registration = self._create_asset_gateway_registration(ctx, config)
+            tweaks = {
+                **tweaks,
+                config["asset_gateway_input_name"]: {"input_value": asset_registration.token},
+            }
+
         try:
             accumulated_content = ""
             message_count = 0
@@ -155,7 +234,7 @@ class DefaultAgentRunner(AgentRunner):
                 input_value=input_text,
                 input_type=config["input_type"],
                 output_type=config["output_type"],
-                tweaks=config["tweaks"],
+                tweaks=tweaks,
                 session_id=session_id,
                 stream=is_stream,
             ):
@@ -239,3 +318,6 @@ class DefaultAgentRunner(AgentRunner):
                 code="langflow.unexpected_error",
             )
             return
+        finally:
+            if asset_registration is not None:
+                asset_registration.stop()

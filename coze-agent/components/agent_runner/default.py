@@ -10,6 +10,7 @@ import json
 import logging
 import typing
 
+from langbot_plugin.api.agent_tools.asset_gateway import get_default_agent_asset_gateway
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
@@ -23,6 +24,38 @@ from pkg.coze_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_LANGBOT_ASSET_TOKEN_INPUT = "langbot_asset_run_token"
+
+
+def _to_bool(value: typing.Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return default
+
+
+def _to_int(value: typing.Any, default: int) -> int:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float(value: typing.Any, default: float) -> float:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _attachment_get(attachment: typing.Any, key: str, default: typing.Any = None) -> typing.Any:
@@ -196,7 +229,38 @@ class DefaultAgentRunner(AgentRunner):
             "api_base": config.get("api-base", "https://api.coze.cn"),
             "timeout": float(config.get("timeout", 120)),
             "auto_save_history": bool(config.get("auto-save-history", True)),
+            "langbot_assets_enabled": _to_bool(config.get("langbot-assets-enabled"), False),
+            "asset_gateway_host": str(config.get("langbot-assets-gateway-host") or "0.0.0.0"),
+            "asset_gateway_port": _to_int(config.get("langbot-assets-gateway-port"), 8765),
+            "asset_gateway_request_timeout": _to_float(config.get("langbot-assets-gateway-request-timeout"), 60.0),
+            "asset_gateway_token_ttl": _to_float(config.get("langbot-assets-token-ttl"), 3600.0),
+            "asset_gateway_input_name": str(
+                config.get("langbot-assets-input-name") or DEFAULT_LANGBOT_ASSET_TOKEN_INPUT
+            ),
         }
+
+    def _create_asset_gateway_registration(
+        self,
+        ctx: AgentRunContext,
+        config: dict[str, typing.Any],
+    ):
+        """Register a run-scoped LangBot asset token in the shared MCP gateway.
+
+        The token is injected into Coze ``custom_variables`` so the bot prompt can
+        reference it (``{{langbot_asset_run_token}}``) and pass it as the
+        ``run_token`` argument on LangBot Asset Gateway MCP tool calls. The
+        registration must be stopped when the run ends.
+        """
+        gateway = get_default_agent_asset_gateway(
+            host=config["asset_gateway_host"],
+            port=config["asset_gateway_port"],
+            request_timeout=config["asset_gateway_request_timeout"],
+        )
+        return gateway.register_run(
+            self.get_run_api(ctx),
+            ctx,
+            ttl_seconds=config["asset_gateway_token_ttl"],
+        )
 
     def _get_user_id(self, ctx: AgentRunContext) -> str:
         """Get user identifier for Coze API."""
@@ -365,6 +429,16 @@ class DefaultAgentRunner(AgentRunner):
         has_response = False
         usage: dict[str, typing.Any] | None = None
 
+        # Optionally register a run-scoped LangBot asset token and pass it to the
+        # Coze bot through custom_variables. The bot prompt references it as
+        # {{langbot_asset_run_token}} and passes it as the run_token argument on
+        # LangBot Asset Gateway MCP tool calls. Stopped in finally when run ends.
+        asset_registration = None
+        custom_variables: dict[str, typing.Any] = {}
+        if config["langbot_assets_enabled"]:
+            asset_registration = self._create_asset_gateway_registration(ctx, config)
+            custom_variables[config["asset_gateway_input_name"]] = asset_registration.token
+
         try:
             async for chunk in client.chat_messages(
                 bot_id=bot_id,
@@ -372,6 +446,7 @@ class DefaultAgentRunner(AgentRunner):
                 additional_messages=additional_messages,
                 conversation_id=conversation_id,
                 auto_save_history=auto_save_history,
+                custom_variables=custom_variables or None,
             ):
                 event_type = chunk.get("event", "")
                 data = chunk.get("data", {})
@@ -444,6 +519,8 @@ class DefaultAgentRunner(AgentRunner):
             return
         finally:
             await client.close()
+            if asset_registration is not None:
+                asset_registration.stop()
 
         # Update state with conversation_id for next run (scoped state)
         if final_conversation_id:

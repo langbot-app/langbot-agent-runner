@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import typing
 
+from langbot_plugin.api.agent_tools.asset_gateway import get_default_agent_asset_gateway
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
@@ -27,6 +28,38 @@ logger = logging.getLogger(__name__)
 # Thinking block markers (special Unicode characters used by DashScope)
 THINK_START = "႑"
 THINK_END = "႐"
+
+DEFAULT_LANGBOT_ASSET_TOKEN_INPUT = "langbot_asset_run_token"
+
+
+def _to_bool(value: typing.Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return default
+
+
+def _to_int(value: typing.Any, default: int) -> int:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float(value: typing.Any, default: float) -> float:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _get_adapter_params(ctx: AgentRunContext) -> dict[str, typing.Any]:
@@ -148,7 +181,37 @@ class DefaultAgentRunner(AgentRunner):
             "app_id": app_id,
             "references_quote": config.get("references_quote", "参考资料来自:"),
             "timeout": float(config.get("timeout", 120)),
+            "langbot_assets_enabled": _to_bool(config.get("langbot-assets-enabled"), False),
+            "asset_gateway_host": str(config.get("langbot-assets-gateway-host") or "0.0.0.0"),
+            "asset_gateway_port": _to_int(config.get("langbot-assets-gateway-port"), 8765),
+            "asset_gateway_request_timeout": _to_float(config.get("langbot-assets-gateway-request-timeout"), 60.0),
+            "asset_gateway_token_ttl": _to_float(config.get("langbot-assets-token-ttl"), 3600.0),
+            "asset_gateway_input_name": str(
+                config.get("langbot-assets-input-name") or DEFAULT_LANGBOT_ASSET_TOKEN_INPUT
+            ),
         }
+
+    def _create_asset_gateway_registration(
+        self,
+        ctx: AgentRunContext,
+        config: dict[str, typing.Any],
+    ):
+        """Register a run-scoped LangBot asset token in the shared MCP gateway.
+
+        The token is injected into DashScope ``biz_params`` so the 百炼 app can
+        reference it and pass it as the ``run_token`` argument on LangBot Asset
+        Gateway MCP tool calls. The registration must be stopped when the run ends.
+        """
+        gateway = get_default_agent_asset_gateway(
+            host=config["asset_gateway_host"],
+            port=config["asset_gateway_port"],
+            request_timeout=config["asset_gateway_request_timeout"],
+        )
+        return gateway.register_run(
+            self.get_run_api(ctx),
+            ctx,
+            ttl_seconds=config["asset_gateway_token_ttl"],
+        )
 
     def _get_session_id(self, ctx: AgentRunContext) -> str:
         """Get session ID from state for multi-turn conversation.
@@ -197,12 +260,22 @@ class DefaultAgentRunner(AgentRunner):
         session_id = self._get_session_id(ctx)
         app_type = config["app_type"]
 
+        # Optionally register a run-scoped LangBot asset token and pass it to the
+        # 百炼 app through biz_params. The app references it (e.g. ${biz_params.X})
+        # and passes it as the run_token argument on LangBot Asset Gateway MCP
+        # tool calls. The token is stopped in finally when the run ends.
+        asset_registration = None
+        asset_biz_params: dict[str, typing.Any] = {}
+        if config["langbot_assets_enabled"]:
+            asset_registration = self._create_asset_gateway_registration(ctx, config)
+            asset_biz_params[config["asset_gateway_input_name"]] = asset_registration.token
+
         try:
             if app_type == "workflow":
-                async for result in self._run_workflow(ctx, client, input_text, session_id):
+                async for result in self._run_workflow(ctx, client, input_text, session_id, asset_biz_params):
                     yield result
             else:
-                async for result in self._run_agent(ctx, client, input_text, session_id):
+                async for result in self._run_agent(ctx, client, input_text, session_id, asset_biz_params):
                     yield result
         except DashScopeAPIError as e:
             yield AgentRunResult.run_failed(
@@ -220,6 +293,9 @@ class DefaultAgentRunner(AgentRunner):
                 code="dashscope.unexpected_error",
             )
             return
+        finally:
+            if asset_registration is not None:
+                asset_registration.stop()
 
     async def _run_agent(
         self,
@@ -227,6 +303,7 @@ class DefaultAgentRunner(AgentRunner):
         client: DashScopeClient,
         input_text: str,
         session_id: str,
+        extra_biz_params: dict[str, typing.Any] | None = None,
     ) -> typing.AsyncGenerator[AgentRunResult, None]:
         """Run agent mode.
 
@@ -249,6 +326,7 @@ class DefaultAgentRunner(AgentRunner):
             prompt=input_text,
             session_id=session_id,
             enable_thinking=enable_thinking,
+            biz_params=extra_biz_params or None,
         ):
             if not chunk:
                 continue
@@ -341,6 +419,7 @@ class DefaultAgentRunner(AgentRunner):
         client: DashScopeClient,
         input_text: str,
         session_id: str,
+        extra_biz_params: dict[str, typing.Any] | None = None,
     ) -> typing.AsyncGenerator[AgentRunResult, None]:
         """Run workflow mode.
 
@@ -352,8 +431,10 @@ class DefaultAgentRunner(AgentRunner):
         usage: dict[str, typing.Any] | None = None
         has_response = False
 
-        # Get business parameters from context
+        # Get business parameters from context, merging the LangBot asset token.
         biz_params = self._get_biz_params(ctx)
+        if extra_biz_params:
+            biz_params = {**biz_params, **extra_biz_params}
 
         async for chunk in client.iter_workflow(
             prompt=input_text,
