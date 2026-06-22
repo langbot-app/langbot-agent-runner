@@ -9,6 +9,7 @@ import logging
 import typing
 import uuid
 
+from langbot_plugin.api.agent_tools.asset_gateway import get_default_agent_asset_gateway
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentRunContext,
@@ -22,6 +23,38 @@ from pkg.n8n_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_LANGBOT_ASSET_TOKEN_INPUT = "langbot_asset_run_token"
+
+
+def _to_bool(value: typing.Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return default
+
+
+def _to_int(value: typing.Any, default: int) -> int:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float(value: typing.Any, default: float) -> float:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _get_adapter_params(ctx: AgentRunContext) -> dict[str, typing.Any]:
@@ -52,6 +85,13 @@ class DefaultAgentRunner(AgentRunner):
     - header-value: Custom header value for header auth
     - timeout: Request timeout in seconds (default: 120)
     - output-key: Key to extract from non-streaming JSON response (default: response)
+    - langbot-assets-enabled: Register a run-scoped LangBot asset token and inject
+      it into the webhook payload (default: false)
+    - langbot-assets-gateway-host/port: Bind address of the local LangBot Asset Gateway
+    - langbot-assets-gateway-request-timeout: Per gateway tool-call timeout (seconds)
+    - langbot-assets-token-ttl: Lifetime of each run token (seconds)
+    - langbot-assets-input-name: Payload field that receives the run token
+      (default: langbot_asset_run_token)
 
     Runtime state (from ctx.state):
     - external.conversation_id: n8n conversation ID for stateful sessions
@@ -89,7 +129,37 @@ class DefaultAgentRunner(AgentRunner):
             },
             "timeout": float(config.get("timeout", 120)),
             "output_key": config.get("output-key", "response"),
+            "langbot_assets_enabled": _to_bool(config.get("langbot-assets-enabled"), False),
+            "asset_gateway_host": str(config.get("langbot-assets-gateway-host") or "0.0.0.0"),
+            "asset_gateway_port": _to_int(config.get("langbot-assets-gateway-port"), 8765),
+            "asset_gateway_request_timeout": _to_float(config.get("langbot-assets-gateway-request-timeout"), 60.0),
+            "asset_gateway_token_ttl": _to_float(config.get("langbot-assets-token-ttl"), 3600.0),
+            "asset_gateway_input_name": str(
+                config.get("langbot-assets-input-name") or DEFAULT_LANGBOT_ASSET_TOKEN_INPUT
+            ),
         }
+
+    def _create_asset_gateway_registration(
+        self,
+        ctx: AgentRunContext,
+        config: dict[str, typing.Any],
+    ):
+        """Register a run-scoped LangBot asset token in the shared MCP gateway.
+
+        The token is later injected into the webhook payload so the n8n workflow
+        can pass it as the ``run_token`` argument on LangBot Asset Gateway MCP
+        tool calls. The registration must be stopped when the run ends.
+        """
+        gateway = get_default_agent_asset_gateway(
+            host=config["asset_gateway_host"],
+            port=config["asset_gateway_port"],
+            request_timeout=config["asset_gateway_request_timeout"],
+        )
+        return gateway.register_run(
+            self.get_run_api(ctx),
+            ctx,
+            ttl_seconds=config["asset_gateway_token_ttl"],
+        )
 
     def _get_user_tag(self, ctx: AgentRunContext) -> str:
         """Get user identifier for n8n webhook."""
@@ -204,6 +274,16 @@ class DefaultAgentRunner(AgentRunner):
         full_content = ""
         has_response = False
 
+        # Optionally register a run-scoped LangBot asset token and inject it into
+        # the webhook payload. The n8n workflow reads this field and passes it as
+        # the run_token argument on LangBot Asset Gateway MCP tool calls, so the
+        # workflow can call back into LangBot history/knowledge/tools during the
+        # webhook request. The token is stopped in finally when the run ends.
+        asset_registration = None
+        if config["langbot_assets_enabled"]:
+            asset_registration = self._create_asset_gateway_registration(ctx, config)
+            payload[config["asset_gateway_input_name"]] = asset_registration.token
+
         try:
             async for event in client.call_webhook(
                 payload=payload,
@@ -252,6 +332,9 @@ class DefaultAgentRunner(AgentRunner):
                 code="n8n.unexpected_error",
             )
             return
+        finally:
+            if asset_registration is not None:
+                asset_registration.stop()
 
         if not has_response:
             yield AgentRunResult.run_failed(
