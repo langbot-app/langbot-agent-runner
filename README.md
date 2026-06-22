@@ -84,6 +84,27 @@ Pipeline 适配字段只用于适配层：
 - 当运行器希望 LangBot 持久化小型 JSON 状态时，返回 `state.updated`。
 - 当运行器生成文件或大型输出时，返回 sandbox path、URL 或平台原生引用。
 
+## 运行中转向（Steering / 多轮追问）
+
+当一次运行仍在进行时，用户继续发来的消息可以被「吸收进当前运行」，而不是排队等待后另起一次运行。这一能力称为 steering。
+
+机制（宿主端已完整实现）：
+
+- 运行器在 AgentRunner 组件 manifest 中声明 `spec.capabilities.steering: true`。
+- 宿主端在运行仍活跃时，将后续用户消息按 `run_id` 入队到该运行的 steering 队列（仅当本次运行有会话范围 `conversation_id`）。
+- 运行器在轮次边界通过 `AgentRunAPIProxy.steering_pull(mode="all"|"one")` 拉取这些追问，并把它们作为后续轮次喂给目标 agent。
+- 宿主端只在 `ctx.context.available_apis.steering_pull` 为真时授权该接口；不可用时 SDK 抛出 `PermissionDeniedError`，运行器应回退为单轮行为。
+
+重要约束：**一旦声明了 `steering` 能力，运行器必须在其所有传输路径上排空 steering 队列**。否则被「吸收进当前运行」的消息会在运行结束时被宿主端标记为 `steering.dropped` 而丢失——这比不声明该能力（消息会另起一次运行）更糟。
+
+官方 `acp-agent-runner`、`claude-code-agent`、`codex-agent` 已实现 steering：它们在 `run()` 层用统一的轮次循环，在每个轮次完成后排空 `steering_pull`，并复用各自的会话恢复机制（ACP `session/resume`、Codex `thread/resume`、Claude Code `--session-id`）让追问延续同一会话，最终只发出一个终止性 `run.completed`。
+
+当前实现的取舍：
+
+- 注入发生在**轮次边界**（当前轮次完成后），不是 token 级别的中途打断。
+- 追问以文本形式延续（`item.input.to_text()`）；追问自带的附件暂不转发。
+- daemon 传输下追问不会丢失（仍会被排空并作为后续轮次执行），但会话连续性是尽力而为。
+
 ## 开发
 
 ### 环境要求

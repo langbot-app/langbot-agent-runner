@@ -19,12 +19,14 @@ from langbot_plugin.api.agent_tools.mcp_access import AgentRunMCPAccess
 from langbot_plugin.api.agent_tools.mcp_config import AgentMCPServerConfig
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import (
+    AgentInput,
     AgentRunContext,
     AgentRunResult,
 )
 from langbot_plugin.api.entities.builtin.provider.message import Message, MessageChunk
 from pkg.acp_client import AcpError, AcpStdioClient
 from pkg.prompt import acp_prompt_blocks, has_acp_prompt_input, prompt_capabilities
+from pkg.steering import run_with_steering
 
 logger = logging.getLogger(__name__)
 
@@ -542,12 +544,12 @@ class DefaultAgentRunner(AgentRunner):
         ctx: AgentRunContext,
         config: dict[str, typing.Any],
         mcp_servers: list[dict[str, typing.Any]],
+        stored_session_id: str,
     ) -> tuple[str, bool]:
         capabilities = initialize_result.get("agentCapabilities")
         if not isinstance(capabilities, dict):
             capabilities = {}
 
-        stored_session_id = self._stored_session_id(ctx)
         if stored_session_id and config["reuse_session"]:
             if _runtime_has_method(capabilities, "session/resume"):
                 result = await client.request(
@@ -674,6 +676,7 @@ class DefaultAgentRunner(AgentRunner):
         ctx: AgentRunContext,
         config: dict[str, typing.Any],
         prompt_text: str,
+        stored_session_id: str,
     ) -> dict[str, typing.Any]:
         return {
             "run_id": ctx.run_id,
@@ -694,7 +697,7 @@ class DefaultAgentRunner(AgentRunner):
                 "create_session_if_missing": config["create_session_if_missing"],
                 "streaming": config["streaming"],
                 "permission_decision": config["permission_decision"],
-                "stored_session_id": self._stored_session_id(ctx),
+                "stored_session_id": stored_session_id,
                 "mcp_servers": config["mcp_servers"],
                 "langbot_assets_enabled": config["mcp_bridge_enabled"],
                 "mcp_request_timeout": config["mcp_bridge_request_timeout"],
@@ -706,6 +709,7 @@ class DefaultAgentRunner(AgentRunner):
         ctx: AgentRunContext,
         config: dict[str, typing.Any],
         prompt_text: str,
+        stored_session_id: str,
     ) -> typing.AsyncGenerator[AgentRunResult, None]:
         hub = get_agent_runtime_daemon_hub("acp", error_code_prefix="acp")
         if not hub.is_running:
@@ -717,7 +721,7 @@ class DefaultAgentRunner(AgentRunner):
 
         await hub.wait_for_daemon(config["daemon_id"], config["daemon_connect_timeout"])
         tools = AgentRunExternalTools(self.get_run_api(ctx), ctx) if config["mcp_bridge_enabled"] else None
-        payload = self._daemon_payload(ctx, config, prompt_text)
+        payload = self._daemon_payload(ctx, config, prompt_text, stored_session_id)
         async for event in hub.run_job(
             daemon_id=config["daemon_id"],
             payload=payload,
@@ -741,9 +745,48 @@ class DefaultAgentRunner(AgentRunner):
 
         prompt_text = self._with_run_scope_prompt(ctx, input_text) if config["append_run_scope_prompt"] else input_text
 
+        # The first turn carries the run-scope system prompt and the original
+        # multimodal input; steering follow-ups are plain text resumed against the
+        # same agent session (the Host queues them while this run is active).
+        first_turn = {"value": True}
+
+        def run_turn(
+            turn_prompt: str, resume_session_id: str
+        ) -> typing.AsyncGenerator[AgentRunResult, None]:
+            if first_turn["value"]:
+                first_turn["value"] = False
+                return self._run_acp_turn(ctx, config, turn_prompt, resume_session_id, ctx.input)
+            return self._run_acp_turn(
+                ctx, config, turn_prompt, resume_session_id, AgentInput(text=turn_prompt)
+            )
+
+        initial_resume = self._stored_session_id(ctx) if config["reuse_session"] else ""
+        async for result in run_with_steering(
+            ctx,
+            lambda: self.get_run_api(ctx),
+            run_turn,
+            initial_prompt=prompt_text,
+            initial_resume_session_id=initial_resume,
+            session_state_key=ACP_SESSION_STATE_KEY,
+        ):
+            yield result
+
+    async def _run_acp_turn(
+        self,
+        ctx: AgentRunContext,
+        config: dict[str, typing.Any],
+        prompt_text: str,
+        resume_session_id: str,
+        agent_input: AgentInput,
+    ) -> typing.AsyncGenerator[AgentRunResult, None]:
+        """Run a single ACP prompt turn, resuming ``resume_session_id`` when set."""
+        stored_session_id = resume_session_id or (
+            self._stored_session_id(ctx) if config["reuse_session"] else ""
+        )
+
         if config["location"] == "daemon":
             try:
-                async for result in self._run_daemon(ctx, config, prompt_text):
+                async for result in self._run_daemon(ctx, config, prompt_text, stored_session_id):
                     yield result
             except AgentRuntimeDaemonError as exc:
                 yield AgentRunResult.run_failed(ctx.run_id, error=exc.message, code=exc.code, retryable=exc.retryable)
@@ -773,9 +816,10 @@ class DefaultAgentRunner(AgentRunner):
                     ctx,
                     config,
                     mcp_servers,
+                    stored_session_id,
                 )
 
-                if created or self._stored_session_id(ctx) != session_id:
+                if created or stored_session_id != session_id:
                     yield AgentRunResult.state_updated(
                         ctx.run_id,
                         ACP_SESSION_STATE_KEY,
@@ -783,7 +827,7 @@ class DefaultAgentRunner(AgentRunner):
                         scope="conversation",
                     )
 
-                prompt_blocks = acp_prompt_blocks(prompt_text, ctx.input, prompt_capabilities(initialize_result))
+                prompt_blocks = acp_prompt_blocks(prompt_text, agent_input, prompt_capabilities(initialize_result))
                 async for result in self._stream_prompt_results(
                     client,
                     ctx,

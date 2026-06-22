@@ -26,6 +26,8 @@ from langbot_plugin.api.agent_tools.mcp_config import AgentMCPServerConfig
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import AgentRunContext, AgentRunResult
 
+from pkg.steering import run_with_steering
+
 SESSION_STATE_KEY = "external.codex_session_id"
 SUPPORTED_LOCATIONS = {"local", "remote-ssh", "daemon"}
 
@@ -401,11 +403,22 @@ class NativeCodexRunner(AgentRunner):
             prompt = _input_text(ctx)
             if not prompt:
                 raise NativeCliError("input text is required", code="codex.empty_input")
-            if config["location"] == "daemon":
-                async for result in self._run_daemon(ctx, config, prompt):
-                    yield result
-                return
-            async for result in self._run_local_or_ssh(ctx, config, prompt, self._resume_session_id(ctx, config)):
+
+            def run_turn(
+                turn_prompt: str, resume_session_id: str
+            ) -> typing.AsyncGenerator[AgentRunResult, None]:
+                if config["location"] == "daemon":
+                    return self._run_daemon(ctx, config, turn_prompt, resume_session_id)
+                return self._run_local_or_ssh(ctx, config, turn_prompt, resume_session_id)
+
+            async for result in run_with_steering(
+                ctx,
+                lambda: self.get_run_api(ctx),
+                run_turn,
+                initial_prompt=prompt,
+                initial_resume_session_id=self._resume_session_id(ctx, config),
+                session_state_key=SESSION_STATE_KEY,
+            ):
                 yield result
         except NativeCliError as exc:
             yield AgentRunResult.run_failed(ctx.run_id, error=exc.message, code=exc.code, retryable=exc.retryable)
@@ -473,6 +486,7 @@ class NativeCodexRunner(AgentRunner):
         ctx: AgentRunContext,
         config: dict[str, typing.Any],
         prompt: str,
+        session_id: str,
     ) -> typing.AsyncGenerator[AgentRunResult, None]:
         hub = get_agent_runtime_daemon_hub("codex", error_code_prefix="codex")
         if not hub.is_running:
@@ -481,7 +495,6 @@ class NativeCodexRunner(AgentRunner):
                 port=config["daemon_hub"]["port"],
                 token=config["daemon_hub"]["token"],
             )
-        session_id = self._resume_session_id(ctx, config)
         tools = AgentRunExternalTools(self.get_run_api(ctx), ctx) if config["langbot_assets_enabled"] else None
         await hub.wait_for_daemon(config["daemon_id"], config["daemon_connect_timeout"])
         payload = {

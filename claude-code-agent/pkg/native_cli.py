@@ -26,6 +26,8 @@ from langbot_plugin.api.agent_tools.mcp_config import AgentMCPServerConfig
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
 from langbot_plugin.api.entities.builtin.agent_runner import AgentRunContext, AgentRunResult
 
+from pkg.steering import run_with_steering
+
 SESSION_STATE_KEY = "external.claude_code_session_id"
 SUPPORTED_LOCATIONS = {"local", "remote-ssh", "daemon"}
 
@@ -285,12 +287,14 @@ class NativeClaudeCodeRunner(AgentRunner):
             return stored, False
         return str(uuid.uuid4()), True
 
-    def _argv(self, config: dict[str, typing.Any], *, session_id: str, mcp_config_path: str) -> list[str]:
+    def _argv(self, config: dict[str, typing.Any], *, session_id: str, mcp_config_path: str, resume: bool) -> list[str]:
         argv = [*_parse_args(config["command"]), *config["args"], "-p", "--verbose", "--output-format", "stream-json"]
         if mcp_config_path:
             argv.extend(["--strict-mcp-config", "--mcp-config", mcp_config_path])
         if session_id:
-            argv.extend(["--session-id", session_id])
+            # `--session-id` only creates a new session; continuing an existing
+            # one (stored reuse or steering follow-up) requires `--resume`.
+            argv.extend(["--resume", session_id] if resume else ["--session-id", session_id])
         return argv
 
     def _mcp_access(self, ctx: AgentRunContext, config: dict[str, typing.Any]) -> AgentRunMCPAccess | None:
@@ -314,14 +318,31 @@ class NativeClaudeCodeRunner(AgentRunner):
             prompt = _input_text(ctx)
             if not prompt:
                 raise NativeCliError("input text is required", code="claude_code.empty_input")
-            if config["location"] == "daemon":
-                async for result in self._run_daemon(ctx, config, prompt):
-                    yield result
-                return
             session_id, session_created = self._session_id(ctx, config)
             if session_created:
                 yield AgentRunResult.state_updated(ctx.run_id, SESSION_STATE_KEY, session_id, scope="conversation")
-            async for result in self._run_local_or_ssh(ctx, config, prompt, session_id):
+
+            # The first turn resumes only when reusing a stored session; every
+            # turn after the first continues the session created/resumed above.
+            resume_state = {"resume": not session_created}
+
+            def run_turn(
+                turn_prompt: str, resume_session_id: str
+            ) -> typing.AsyncGenerator[AgentRunResult, None]:
+                resume = resume_state["resume"]
+                resume_state["resume"] = True
+                if config["location"] == "daemon":
+                    return self._run_daemon(ctx, config, turn_prompt, resume_session_id, resume)
+                return self._run_local_or_ssh(ctx, config, turn_prompt, resume_session_id, resume)
+
+            async for result in run_with_steering(
+                ctx,
+                lambda: self.get_run_api(ctx),
+                run_turn,
+                initial_prompt=prompt,
+                initial_resume_session_id=session_id,
+                session_state_key=SESSION_STATE_KEY,
+            ):
                 yield result
         except NativeCliError as exc:
             yield AgentRunResult.run_failed(ctx.run_id, error=exc.message, code=exc.code, retryable=exc.retryable)
@@ -334,6 +355,7 @@ class NativeClaudeCodeRunner(AgentRunner):
         config: dict[str, typing.Any],
         prompt: str,
         session_id: str,
+        resume: bool,
     ) -> typing.AsyncGenerator[AgentRunResult, None]:
         access = self._mcp_access(ctx, config)
         mcp_config_path = ""
@@ -344,7 +366,7 @@ class NativeClaudeCodeRunner(AgentRunner):
                 mcp_config_path = _write_temp_mcp_config(mcp_config)
             elif mcp_config:
                 mcp_config_path = _MCP_CONFIG_ARG_PLACEHOLDER
-            argv = self._argv(config, session_id=session_id, mcp_config_path=mcp_config_path)
+            argv = self._argv(config, session_id=session_id, mcp_config_path=mcp_config_path, resume=resume)
             env = {**os.environ, **config["env"]}
             command = argv[0]
             args = argv[1:]
@@ -392,6 +414,8 @@ class NativeClaudeCodeRunner(AgentRunner):
         ctx: AgentRunContext,
         config: dict[str, typing.Any],
         prompt: str,
+        session_id: str,
+        resume: bool,
     ) -> typing.AsyncGenerator[AgentRunResult, None]:
         hub = get_agent_runtime_daemon_hub("claude-code", error_code_prefix="claude_code")
         if not hub.is_running:
@@ -400,14 +424,12 @@ class NativeClaudeCodeRunner(AgentRunner):
                 port=config["daemon_hub"]["port"],
                 token=config["daemon_hub"]["token"],
             )
-        session_id, session_created = self._session_id(ctx, config)
-        if session_created:
-            yield AgentRunResult.state_updated(ctx.run_id, SESSION_STATE_KEY, session_id, scope="conversation")
         tools = AgentRunExternalTools(self.get_run_api(ctx), ctx) if config["langbot_assets_enabled"] else None
         await hub.wait_for_daemon(config["daemon_id"], config["daemon_connect_timeout"])
         payload = {
             "prompt": prompt,
             "session_id": session_id,
+            "resume": resume,
             "config": {
                 "command": config["command"],
                 "args": config["args"],
@@ -453,7 +475,8 @@ class NativeClaudeCodeDaemon(AgentRuntimeDaemonClient):
                 argv.extend(["--strict-mcp-config", "--mcp-config", mcp_config_path])
             session_id = str(payload.get("session_id") or "")
             if session_id:
-                argv.extend(["--session-id", session_id])
+                # See NativeClaudeCodeRunner._argv: resume continues, session-id creates.
+                argv.extend(["--resume", session_id] if payload.get("resume") else ["--session-id", session_id])
             try:
                 async for event in _run_cli_process_events(
                     argv[0],

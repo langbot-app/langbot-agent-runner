@@ -123,6 +123,27 @@ Useful options:
 Headless ACP permission requests are answered with `allow_once` by default.
 LangBot does not yet expose an interactive approval UI for these requests.
 
+## Steering (follow-up input)
+
+This runner declares `capabilities.steering: true`. When a run is still in
+progress and the user sends another message, LangBot absorbs it into the active
+run instead of starting a new one. The runner drains these follow-ups at each
+turn boundary via `steering_pull` and runs them as additional ACP
+`session/prompt` turns that resume the same session (`session/resume` or
+`session/load`). The run emits a single terminal `run.completed` once no
+follow-ups remain.
+
+Notes:
+
+- Follow-ups are injected between turns, not mid-token.
+- Follow-up turns currently carry text only; attachments on follow-ups are not
+  yet forwarded (the first turn still maps full multimodal input as described
+  below).
+- In `daemon` mode follow-ups are still drained (no message loss), but session
+  continuity across follow-up turns is best-effort.
+- Steering only applies when the run has a conversation scope; otherwise the
+  runner transparently falls back to single-turn execution.
+
 ## Multimodal Input
 
 The runner accepts LangBot structured input and attachments. It maps them to ACP

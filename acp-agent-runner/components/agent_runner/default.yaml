@@ -388,6 +388,7 @@ spec:
     knowledge_retrieval: true
     multimodal_input: true
     interrupt: false
+    steering: true
   permissions:
     tools:
       - detail
