@@ -6,6 +6,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import logging
 import os
 import re
 import shlex
@@ -30,6 +31,7 @@ from pkg.steering import run_with_steering
 
 SESSION_STATE_KEY = "external.codex_session_id"
 SUPPORTED_LOCATIONS = {"local", "remote-ssh", "daemon"}
+logger = logging.getLogger(__name__)
 
 
 _AUTH_ASSIGNMENT_RE = re.compile(r"(?i)(\bAuthorization\b[\"']?\s*[:=]\s*[\"']?)(?:Bearer\s+)?[^\"'\s,}\]]+")
@@ -696,8 +698,13 @@ class _CodexAppServerClient:
                 if thread_id:
                     self.thread_id = thread_id
                     return thread_id
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "Failed to resume Codex thread; starting a new thread: thread_id=%s error=%s",
+                    resume_session_id,
+                    exc,
+                    exc_info=True,
+                )
 
         result = await self.request(
             "thread/start",

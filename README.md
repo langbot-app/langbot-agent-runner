@@ -4,6 +4,15 @@
 
 这些插件是协议消费者。LangBot 宿主端负责运行封套、资源授权、事实存储、拉取接口、结果归一化和投递生命周期；插件只负责对应服务的请求/响应映射和状态交接。
 
+## 兼容分支
+
+本仓库跟随 LangBot 4.11.x AgentRunner 集成工作。联合测试时使用：
+
+- `langbot-app/LangBot` 分支 `dev/4.11.x`
+- `langbot-app/langbot-plugin-sdk` 分支 `dev/4.11.x`
+- `langbot-app/langbot-local-agent` 分支 `main`
+- `langbot-app/langbot-agent-control-plane` 分支 `main`
+
 ## 仓库边界
 
 本仓库不实现 LangBot EventGateway、事件订阅、事件通知、调度器或事件分发。这些系统属于 LangBot 宿主端或独立的事件相关分支。
@@ -19,7 +28,7 @@
 - `ctx.runtime`：截止时间、追踪标识、迁移适配路径中的查询标识，以及宿主端运行时元数据。
 - `ctx.delivery`：当前投递面和流式输出 / 编辑能力。
 - `ctx.config`：运行器绑定配置。
-- `ctx.adapter`：迁移适配字段；它不是协议 v1 核心字段，也不应承载提示词、历史、RAG 结果、工具结构或已授权资源。
+- `ctx.adapter`：迁移期入口适配字段；它不是协议 v1 核心字段。当前仅允许承载一次性入口元数据，例如 `ctx.adapter.extra.params` 里的业务参数；不应承载提示词、历史、RAG 结果、工具结构或已授权资源。
 
 LangBot 默认不会内联完整历史。如果运行器需要更多上下文，应使用已授权的拉取接口，例如历史、事件、状态或存储接口。
 
@@ -109,7 +118,7 @@ Pipeline 适配字段只用于适配层：
 
 ### 环境要求
 
-- Python 3.10+
+- Python 3.11+
 - `uv` 包管理器
 
 ### 安装依赖
