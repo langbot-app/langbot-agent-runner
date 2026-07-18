@@ -1,66 +1,113 @@
-# n8n 工作流 Agent
+# n8n Workflow Agent
 
-n8n 工作流 Agent 将 n8n Webhook 工作流接入 LangBot AgentRunner。插件把当前输入和会话标识发送到 Webhook，支持 Basic、JWT 和自定义 Header 鉴权，并可向工作流注入短期 LangBot 资产 token。
+Run an n8n workflow webhook as a LangBot AgentRunner.
 
 ## Runner ID
 
 `plugin:langbot-team/N8nAgent/default`
 
-## 主要能力
+## Configuration
 
-- 支持任意可返回文本或 JSON 的 n8n Webhook。
-- 支持无鉴权、Basic Auth、JWT 和自定义 Header。
-- 支持流式或普通响应解析。
-- 为外部工作流生成并持久化独立 conversation/session ID。
-- 可让 n8n AI Agent 通过 MCP Client Tool 访问 LangBot 授权资源。
-
-## 配置
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `webhook-url` | `string` | 是 | 空 | n8n Webhook URL |
-| `auth-type` | `select` | 是 | `none` | `none`、`basic`、`jwt` 或 `header` |
-| `basic-username` | `string` | 否 | 空 | Basic Auth 用户名 |
-| `basic-password` | `secret` | 否 | 空 | Basic Auth 密码 |
-| `jwt-secret` | `secret` | 否 | 空 | JWT 签名密钥 |
-| `jwt-algorithm` | `string` | 否 | `HS256` | JWT 算法 |
-| `header-name` | `string` | 否 | 空 | 自定义鉴权 Header 名称 |
-| `header-value` | `secret` | 否 | 空 | 自定义鉴权 Header 值 |
-| `timeout` | `integer` | 否 | `120` | Webhook 请求超时秒数 |
-| `output-key` | `string` | 否 | `response` | JSON 响应中的输出字段 |
-| `langbot-assets-enabled` | `boolean` | 否 | `false` | 是否启用 LangBot 资产回调 |
-| `langbot-assets-gateway-host` | `string` | 否 | `0.0.0.0` | Asset Gateway 监听地址 |
-| `langbot-assets-gateway-port` | `integer` | 否 | `8765` | 网关端口 |
-| `langbot-assets-gateway-request-timeout` | `integer` | 否 | `60` | 网关调用超时 |
-| `langbot-assets-token-ttl` | `integer` | 否 | `3600` | 运行 token 有效期 |
-| `langbot-assets-input-name` | `string` | 否 | `langbot_asset_run_token` | Webhook payload 中的 token 字段名 |
+| webhook-url | string | yes | '' | n8n webhook URL |
+| auth-type | select | yes | none | Authentication type (none/basic/jwt/header) |
+| basic-username | string | no | '' | Basic auth username |
+| basic-password | secret | no | '' | Basic auth password |
+| jwt-secret | secret | no | '' | JWT secret |
+| jwt-algorithm | string | no | HS256 | JWT algorithm |
+| header-name | string | no | '' | Custom header name |
+| header-value | secret | no | '' | Custom header value |
+| timeout | integer | no | 120 | Request timeout (seconds) |
+| output-key | string | no | response | Response output key |
+| langbot-assets-enabled | boolean | no | false | Register a short-lived LangBot asset token for each run and inject it into the webhook payload |
+| langbot-assets-gateway-host | string | no | 0.0.0.0 | Host for the local LangBot Asset Gateway |
+| langbot-assets-gateway-port | integer | no | 8765 | Port for the local LangBot Asset Gateway |
+| langbot-assets-gateway-request-timeout | integer | no | 60 | Timeout for individual gateway tool calls |
+| langbot-assets-token-ttl | integer | no | 3600 | Lifetime of each run token in seconds |
+| langbot-assets-input-name | string | no | langbot_asset_run_token | Webhook payload field that receives the run token |
 
-## Webhook Payload 与状态
+## LangBot Asset Callback Through n8n MCP Client Tool
 
-runner 会为外部系统维护独立的 conversation ID 和 session ID，不直接复用 LangBot 内部 ID。新生成的 ID 通过 Host 会话状态持久化，后续请求保持一致。Webhook 可以使用这些字段关联工作流状态。
+n8n can call back into LangBot assets through the SDK Asset Gateway, the same
+mechanism the Dify runner uses. The gateway is a run-token-authorized MCP server
+(`POST /mcp`, JSON-RPC) that exposes the run-authorized LangBot tools:
+`langbot_list_assets`, `langbot_get_current_event`, `langbot_history_page`,
+`langbot_retrieve_knowledge`, `langbot_get_tool_detail`, and `langbot_call_tool`.
 
-## LangBot 资产回调
+### How it works
 
-n8n 工作流应包含：
+1. When `langbot-assets-enabled` is true, this runner registers a short-lived,
+   run-scoped token before calling the webhook and injects it into the webhook
+   payload under `langbot-assets-input-name` (default `langbot_asset_run_token`).
+2. The n8n workflow consumes the webhook, reads that field, and passes it as the
+   `run_token` argument on every LangBot MCP tool call.
+3. The runner removes the token when the run ends. Tool calls without a valid
+   token are rejected by the gateway.
 
-1. Webhook Trigger，并在最后一个节点完成后返回响应。
-2. 使用 HTTP Streamable transport 的 MCP Client Tool，地址指向 Asset Gateway `/mcp`。
-3. 连接 MCP Client Tool 的 AI Agent。
-4. prompt 中从 Webhook payload 读取 token，并在每次 LangBot MCP 调用中作为 `run_token` 传入。
+The gateway accepts the token either via an `Authorization: Bearer` header or via
+a `run_token` tool-call argument. Because n8n credentials are static and cannot
+carry a per-run header, use the **`run_token` argument** approach (same as Dify).
 
-因为 n8n credentials 是静态的，不适合携带每次运行变化的 Header，所以推荐使用工具参数传递 `run_token`。
+### Build the n8n workflow
 
-## 限制与安全
+The n8n workflow behind the webhook must use an **AI Agent** node with an
+**MCP Client Tool** node attached:
 
-- n8n Cloud 需要可公开访问的 HTTPS Asset Gateway。
-- 工作流必须在 Webhook 请求结束前完成资产回调。
-- Basic 密码、JWT secret 和自定义 Header 值使用密钥字段。
-- `output-key` 与工作流返回结构不一致时会得到空结果或解析错误。
-- token 在当前运行结束后立即注销。
+1. **Webhook** trigger node — receives the LangBot payload, including
+   `langbot_asset_run_token`. Respond when the last node finishes so the asset
+   callbacks happen inside the request window (before the token is revoked).
+2. **MCP Client Tool** node (n8n version >= 1.2, `defaultVersion` 1.3):
+   - Transport: **HTTP Streamable**.
+   - Endpoint: the public URL that routes to the gateway `/mcp`, e.g.
+     `https://example.com/mcp`.
+   - Authentication: **None** (the token travels as a tool argument, not a header).
+3. **AI Agent** node — attach the MCP Client Tool. In the system prompt, instruct
+   the agent to pass `run_token` on every LangBot tool call, for example:
 
-## 开发检查
+   ```text
+   For every LangBot MCP tool call, set run_token exactly to:
+   {{ $json.langbot_asset_run_token }}
+   Call langbot_list_assets first when you need to discover available LangBot
+   assets for the current run.
+   ```
 
-```bash
-uv run --no-sync pytest -q
-uv run --no-sync ruff check .
+4. Return the agent output in the webhook response (streaming `type: item`/`end`
+   chunks, or a JSON object keyed by `output-key`).
+
+### Configure LangBot
+
+Select the n8n runner on the LangBot pipeline and set:
+
+```text
+webhook-url = <your n8n webhook URL>
+auth-type = none
+timeout = 120
+langbot-assets-enabled = true
+langbot-assets-gateway-host = 0.0.0.0
+langbot-assets-gateway-port = 8765
+langbot-assets-gateway-request-timeout = 60
+langbot-assets-token-ttl = 3600
+langbot-assets-input-name = langbot_asset_run_token
 ```
+
+The public MCP endpoint configured in the n8n MCP Client Tool node must route to
+this same gateway instance. The runner only injects the short-lived token into
+the webhook payload; it does not create or update the n8n MCP Client Tool node.
+
+### Limitations
+
+- n8n Cloud (and any n8n that cannot reach `localhost`) needs a public HTTPS URL
+  for the gateway `/mcp` endpoint. Temporary tunnel URLs are for testing only.
+- The run token is short-lived and run-scoped, injected only while LangBot calls
+  the webhook and revoked when the run finishes. The workflow must complete its
+  asset callbacks within the webhook request.
+- The gateway exposes only the assets permitted by the current run: current
+  event, history page, knowledge retrieval, tool detail, and tool call.
+- n8n's MCP Client Tool uses the official MCP SDK (`StreamableHTTPClientTransport`).
+  Verify the `initialize` + `tools/list` handshake against your gateway once when
+  setting it up.
+
+## Legacy Runner
+
+Migrated from `n8n-service-api` in LangBot.

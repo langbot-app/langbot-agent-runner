@@ -1,69 +1,57 @@
 # Codex Agent
 
-Codex Agent 通过 Codex app-server JSON-RPC 协议把 Codex CLI 接入 LangBot AgentRunner。它支持本机、SSH 和用户侧 daemon 三种运行位置，并通过受控 MCP 配置向 Codex 提供当前运行授权的 LangBot 工具与资源。
+## Overview
 
-## Runner ID
+Run Codex CLI as a LangBot AgentRunner.
 
-`plugin:langbot-team/CodexAgent/default`
+## Package information
 
-## 前置条件
+- **Runner ID**: `plugin:langbot-team/CodexAgent/default`
+- **Version**: `0.1.7`
+- **Repository**: [https://github.com/langbot-app/langbot-agent-runner](https://github.com/langbot-app/langbot-agent-runner)
 
-- 运行位置已经安装 Codex CLI。
-- Codex 已完成认证，用户的 `CODEX_HOME` 中存在有效认证状态。
-- 配置的工作区存在且可写。
-- 使用 SSH 或 daemon 时，网络和认证配置可用。
+## Capabilities
 
-## 运行模式
+- **Enabled**: `streaming`, `tool calling`, `knowledge retrieval`, `steering`
+- **Not declared**: `multimodal input`, `interrupt`
 
-- `local`：启动 `codex app-server --listen stdio://` 并通过 stdio JSON-RPC 通信。
-- `remote-ssh`：在远端启动 app-server，并通过 SDK 反向隧道访问 LangBot MCP 资源。
-- `daemon`：用户侧 daemon 主动连接 LangBot，在用户机器上启动 Codex app-server。
+## Configuration
 
-## 插件级 Daemon 配置
-
-| 字段 | 类型 | 默认值 | 说明 |
+| Field | Type | Required | Default |
 | --- | --- | --- | --- |
-| `daemon-enabled` | `boolean` | `false` | 是否启动 daemon Hub |
-| `daemon-host` | `string` | `127.0.0.1` | Hub 监听地址 |
-| `daemon-port` | `integer` | `8768` | Hub 端口 |
-| `daemon-token` | `secret` | 空 | daemon 共享令牌 |
+| `daemon-enabled` | `boolean` | No | false |
+| `daemon-host` | `string` | No | `127.0.0.1` |
+| `daemon-port` | `integer` | No | `8768` |
+| `daemon-token` | `secret` | No | Empty |
+| `location` | `select` | Yes | `local` |
+| `workspace` | `string` | No | Empty |
+| `command` | `string` | No | `codex` |
+| `args-json` | `string` | No | `[]` |
+| `env-json` | `string` | No | `{}` |
+| `ssh-target` | `string` | No | Empty |
+| `ssh-port` | `integer` | No | `22` |
+| `daemon-id` | `string` | No | Empty |
+| `timeout` | `integer` | No | `300` |
+| `streaming` | `boolean` | No | true |
+| `reuse-session` | `boolean` | No | true |
+| `langbot-assets-enabled` | `boolean` | No | true |
+| `mcp-bridge-transport` | `select` | No | `auto` |
+| `mcp-servers-json` | `string` | No | `[]` |
 
-## Runner 配置
+## Host permissions
 
-| 字段 | 说明 |
-| --- | --- |
-| `location` | `local`、`remote-ssh` 或 `daemon` |
-| `workspace` | Codex 工作目录 |
-| `command` | Codex CLI 命令 |
-| `args-json` | 追加的 app-server 参数 JSON |
-| `env-json` | 追加的环境变量 JSON |
-| `ssh-target` / `ssh-port` | SSH 目标和端口 |
-| `daemon-id` | daemon 客户端 ID |
-| `timeout` | 运行超时秒数 |
-| `streaming` | 是否输出流式增量 |
-| `reuse-session` | 是否恢复 Codex thread |
-| `langbot-assets-enabled` | 是否注入 LangBot 授权资源 |
-| `mcp-bridge-transport` | MCP bridge 传输方式 |
-| `mcp-servers-json` | 额外 MCP server 配置 |
+- **`tools`**: `detail`, `call`
+- **`knowledge_bases`**: `retrieve`
+- **`history`**: `page`
 
-## 隔离与配置管理
+## Installation and usage
 
-runner 会在工作区下准备隔离的每次运行 `CODEX_HOME`，链接用户已有的 Codex 认证与 session 状态，并把托管的 MCP server 配置写入 `config.toml`。敏感 MCP 信息不会通过命令行参数传递。
+1. Install the plugin from the LangBot plugin marketplace.
+2. Select the Runner ID below in the Pipeline AgentRunner selector.
+3. Fill in connection settings from the table and store credentials in secret fields in the admin UI.
 
-## Thread 与 Steering
+## Security and limitations
 
-启用 session 复用后，runner 使用 `thread/resume` 恢复 Codex thread。同一 LangBot 会话在运行期间收到新消息时，runner 会在 turn 边界拉取 steering 输入，并继续当前 thread。steering 不会在 token 输出中途插入，跟进消息附件目前不会转发。
-
-## 安全说明
-
-- 不要把 Codex 认证信息放入普通配置或命令参数。
-- 工作区和隔离 `CODEX_HOME` 必须限制为运行用户可访问。
-- daemon Hub 对外暴露时必须配置共享 token 和 TLS。
-- Codex 只能使用当前运行通过 MCP bridge 授权的 LangBot 能力。
-
-## 开发检查
-
-```bash
-uv run --no-sync pytest -q
-uv run --no-sync ruff check .
-```
+- The runner can use only LangBot resources authorized for the current run.
+- Availability, model abilities, and rate limits depend on the external service.
+- See the full Chinese README at the package root for advanced behavior and product-specific limitations.

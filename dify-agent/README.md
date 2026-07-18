@@ -1,74 +1,268 @@
 # Dify Agent
 
-Dify Agent 将 Dify 的 Chat、Agent、Chatflow 或 Workflow 应用接入 LangBot AgentRunner。插件负责组装输入、管理 Dify conversation ID、解析阻塞或流式响应，并可通过 SDK Asset Gateway 让 Dify Agent 在当前运行范围内调用 LangBot 工具、知识库和历史。
+Run a Dify application as a LangBot AgentRunner.
 
 ## Runner ID
 
 `plugin:langbot-team/DifyAgent/default`
 
-## 主要能力
+## Configuration (Static)
 
-- 支持 Dify Chat/Chatflow、Agent 和 Workflow API。
-- 支持流式回复。
-- 支持文本与图片输入映射。
-- 在 Host 会话状态中保存合法的 Dify conversation ID。
-- 可向 Dify inputs 注入短期 LangBot 资产 token。
-- 可通过 Dify MCP 工具回调 LangBot 的当前事件、历史、知识库和工具。
+Configuration is **static** and should not contain runtime state. Only the following static fields are supported:
 
-## 配置
-
-配置必须保持静态，不要把外部 conversation ID 写进 pipeline 配置。
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `base-url` | `string` | 是 | `https://api.dify.ai/v1` | Dify Service API 地址，通常保留 `/v1` |
-| `base-prompt` | `text` | 是 | 文件处理提示词 | 加在 LangBot 输入前的指令 |
-| `app-type` | `select` | 是 | `chat` | `chat`、`agent` 或 `workflow` |
-| `api-key` | `secret` | 是 | 空 | 目标 Dify 应用的 Service API key |
-| `timeout` | `integer` | 否 | `30` | 请求超时秒数；长工作流建议至少 `120` |
-| `langbot-assets-enabled` | `boolean` | 否 | `false` | 是否启用 LangBot 资产回调 |
-| `langbot-assets-gateway-host` | `string` | 否 | `0.0.0.0` | Asset Gateway 监听地址 |
-| `langbot-assets-gateway-port` | `integer` | 否 | `8765` | Asset Gateway 端口 |
-| `langbot-assets-gateway-request-timeout` | `integer` | 否 | `60` | 单次网关工具调用超时 |
-| `langbot-assets-token-ttl` | `integer` | 否 | `3600` | 运行 token 有效期秒数 |
-| `langbot-assets-input-name` | `string` | 否 | `langbot_asset_run_token` | 接收 token 的 Dify input 名称 |
+| base-url | string | yes | https://api.dify.ai/v1 | Dify API base URL |
+| api-key | secret | yes | '' | Dify Service API key |
+| app-type | select | yes | chat | Application type (chat/agent/workflow) |
+| base-prompt | text | yes | File-handling instruction | Instruction prepended to LangBot input |
+| timeout | integer | no | 30 | Request timeout (seconds) |
+| langbot-assets-enabled | boolean | no | false | Register a short-lived LangBot asset token for each run and pass it to Dify inputs |
+| langbot-assets-gateway-host | string | no | 0.0.0.0 | Host for the local LangBot Asset Gateway |
+| langbot-assets-gateway-port | integer | no | 8765 | Port for the local LangBot Asset Gateway |
+| langbot-assets-gateway-request-timeout | integer | no | 60 | Timeout for individual gateway tool calls |
+| langbot-assets-token-ttl | integer | no | 3600 | Lifetime of each run token in seconds |
+| langbot-assets-input-name | string | no | langbot_asset_run_token | Dify input variable that receives the run token |
 
-## 会话状态
+**Note:** Do not put `conversation_id` in config. Use `AgentRunContext.state` for conversation state.
 
-runner 从 `ctx.state.conversation["external.conversation_id"]` 读取 Dify conversation ID。只有合法的 Dify UUID 才会发送给 Dify；LangBot 自己的 conversation ID 不会直接复用，因为 Dify 会拒绝非 UUID 值。
+## Capabilities
 
-Dify 返回新 conversation ID 后，runner 通过会话级 `state.updated` 交给 Host 持久化，下一次运行自动恢复。
+- `streaming`: yes
+- `multimodal_input`: yes
 
-## LangBot Asset Gateway
+## Runtime State
 
-启用资产回调时，runner 为当前运行注册短期 token，并写入名为 `langbot-assets-input-name` 的 Dify input。Dify Agent 需要提前配置指向网关 `/mcp` 的 MCP provider，并在每次 LangBot MCP 工具调用中把该 input 值作为 `run_token` 参数。
+Conversation state is managed through `AgentRunContext.state` and `AgentRunResult.state_updated`:
 
-网关提供的工具包括当前事件、历史分页、知识库检索、工具详情和工具调用。具体可见资源仍由 LangBot 当前运行的授权策略决定。
+### Reading State
 
-### Dify Cloud 配置要点
+The runner reads `external.conversation_id` from scoped state:
 
-1. 在 Dify Tools 中创建 Streamable HTTP MCP provider。
-2. URL 指向可公开访问的 Asset Gateway `/mcp`。
-3. 在目标 Agent 应用中挂载 LangBot MCP 工具。
-4. 新增与 `langbot-assets-input-name` 同名的文本 input。
-5. 在 prompt 中要求每次工具调用传入该 input 作为 `run_token`。
-6. 使用支持工具调用且兼容 Dify 工具消息格式的模型。
-
-## 限制与安全
-
-- Dify Cloud 无法访问 `localhost` 或私网地址，生产环境需要稳定 HTTPS 域名。
-- token 在运行结束后注销，异步延迟任务不能继续使用。
-- Dify Workflow 必须把目标输出放在可解析字段中。
-- API key 使用密钥输入框，且必须是应用 Service API key，不是控制台登录 token。
-- Asset Gateway 只暴露当前运行授权资源，不能跨会话复用 token。
-
-## 验证建议
-
-使用 LangBot Debug Chat 发起真实运行，让 Dify Agent 先调用 `langbot_list_assets`，成功后返回固定标记。不要只在 Dify Cloud Preview 中验证，因为 Preview 不会自动收到 LangBot 生成的实时 token。
-
-## 开发检查
-
-```bash
-uv run --no-sync pytest -q
-uv run --no-sync ruff check .
+```python
+conversation_id = ctx.state.conversation.get("external.conversation_id")
 ```
+
+Priority:
+1. `ctx.state.conversation["external.conversation_id"]` when it is a Dify UUID
+2. Empty string (start a new Dify conversation)
+
+Host-provided LangBot conversation IDs are intentionally not sent to Dify,
+because Dify rejects non-UUID `conversation_id` values.
+
+### Updating State
+
+The runner outputs `state.updated` with proper scope:
+
+```python
+yield AgentRunResult.state_updated(
+    ctx.run_id,
+    "external.conversation_id",
+    dify_conversation_id,
+    scope="conversation",
+)
+```
+
+LangBot host persists this state and loads it on the next run.
+
+## LangBot Asset Callback Through Dify MCP
+
+Dify can call back into LangBot assets through the SDK Asset Gateway when the
+Dify app has an MCP provider registered against the gateway URL.
+
+### Prerequisites
+
+- The Dify app must be an Agent app with MCP tools enabled.
+- The LangBot runner must be installed from this plugin and selected by the
+  pipeline as `plugin:langbot-team/DifyAgent/default`.
+- The SDK Asset Gateway must be reachable by Dify. For Dify Cloud, this means a
+  public HTTPS URL that forwards to the gateway `/mcp` endpoint. A temporary
+  tunnel is fine for testing, but use a stable domain or reverse proxy for
+  production.
+- The Dify app needs a Service API key for LangBot to call `https://api.dify.ai/v1`.
+
+For Dify Cloud, the MCP provider URL should look like:
+
+```text
+https://example.com/mcp
+```
+
+### Configure Dify Cloud
+
+1. Open Dify Cloud and go to **Tools -> MCP**.
+2. Create an MCP provider for the LangBot Asset Gateway.
+3. Set the provider URL to the public gateway URL, for example
+   `https://example.com/mcp`.
+4. Confirm Dify can discover the LangBot tools. The expected tool set is:
+   `langbot_list_assets`, `langbot_get_current_event`,
+   `langbot_history_page`, `langbot_retrieve_knowledge`,
+   `langbot_get_tool_detail`, and `langbot_call_tool`.
+5. Open the target Dify Agent app configuration and attach the LangBot MCP tools.
+6. Add a hidden text input variable matching `langbot-assets-input-name`,
+   defaulting to:
+
+```text
+langbot_asset_run_token
+```
+
+7. Add prompt guidance telling the app to pass that input value as the
+   `run_token` argument on every LangBot MCP tool call. A minimal prompt pattern
+   is:
+
+```text
+For every LangBot MCP tool call, set run_token exactly to:
+{{langbot_asset_run_token}}
+Call langbot_list_assets first when you need to discover available LangBot
+assets for the current run.
+```
+
+8. Use a tool-compatible chat model. For example, `gpt-4o-mini` works for this
+   flow. Avoid models that reject Dify's tool result message format; `o3-mini`
+   has been observed to fail with:
+
+```text
+Unsupported value: 'messages[3].role' does not support 'function' with this model.
+```
+
+### Configure LangBot
+
+Select the Dify runner on the LangBot pipeline and set:
+
+```text
+base-url = https://api.dify.ai/v1
+api-key = <Dify app Service API key>
+app-type = agent
+timeout = 120
+langbot-assets-enabled = true
+langbot-assets-gateway-host = 0.0.0.0
+langbot-assets-gateway-port = 8765
+langbot-assets-gateway-request-timeout = 60
+langbot-assets-token-ttl = 3600
+langbot-assets-input-name = langbot_asset_run_token
+```
+
+The runner registers a run-scoped token before calling Dify and removes it when
+the run ends. Tool calls without a valid token are rejected by the gateway.
+
+The public Dify MCP provider URL must route to this same gateway instance. The
+runner only injects the short-lived token into Dify inputs; it does not create
+or update the Dify MCP provider.
+
+### Verify the Flow
+
+Use LangBot Debug Chat or another real LangBot run. Do not rely on Dify Cloud
+preview alone, because preview does not automatically receive a live
+`langbot_asset_run_token`.
+
+Send a prompt like:
+
+```text
+Call LangBot MCP tool langbot_list_assets first, using the injected run_token.
+If the tool call succeeds, reply only LANGBOT_DIFY_MCP_OK.
+If the token is missing or invalid, reply RUN_TOKEN_FAILED.
+```
+
+A passing run should show the sentinel response in LangBot and backend logs
+similar to:
+
+```text
+assistant: requested tools: langbot_list_assets
+```
+
+### Limitations
+
+- Dify Cloud cannot reach `localhost` or a private LAN gateway. Use public HTTPS
+  for the MCP provider URL.
+- Temporary tunnel URLs such as `trycloudflare.com` are only suitable for
+  testing. When the tunnel stops or changes, the Dify MCP provider URL becomes
+  invalid.
+- The run token is short-lived and run-scoped. It is injected only when LangBot
+  calls Dify through this runner, then stopped when the run finishes.
+- Dify Cloud preview calls usually fail for LangBot MCP tools unless a valid
+  token from a live LangBot run is supplied manually.
+- The Dify app prompt must consistently pass `run_token` to every LangBot MCP
+  tool call. Missing or invalid tokens are rejected by the gateway.
+- Model compatibility matters. The Dify Agent model must support the function
+  or tool message roles produced by Dify's tool executor.
+- The gateway exposes only the assets permitted by the current LangBot run:
+  current event, history page, knowledge retrieval, tool detail, and tool call.
+- The gateway lifetime is tied to the LangBot process and configured port. Port
+  conflicts or process restarts will break the public MCP endpoint until the
+  proxy points at the new live gateway.
+- Keep the gateway behind HTTPS and avoid logging or exposing run tokens. Tune
+  `langbot-assets-token-ttl` to the minimum value that still covers expected
+  Dify tool latency.
+
+## Workflow Inputs
+
+Workflow inputs are passed through `ctx.adapter.extra.params`:
+
+```python
+# Runner uses adapter params as Dify inputs
+inputs = dict((ctx.adapter.extra or {}).get("params") or {})
+```
+
+Legacy input variables are derived from context:
+
+| Variable | Source |
+| --- | --- |
+| langbot_user_message_text | `ctx.input.to_text()` |
+| langbot_session_id | `ctx.conversation.session_id` or `ctx.run_id` |
+| langbot_conversation_id | `ctx.state.conversation.get("external.conversation_id")` when it is a Dify UUID |
+| langbot_msg_create_time | `ctx.adapter.extra.params["msg_create_time"]` if provided |
+
+## Example Usage
+
+### Chat/Agent Mode with Stateful Session
+
+LangBot host provides state snapshot:
+
+```python
+ctx = AgentRunContext(
+    run_id="run_001",
+    input=AgentInput(text="Hello"),
+    config={
+        "base-url": "https://api.dify.ai/v1",
+        "api-key": "app-xxx",
+        "app-type": "chat",
+    },
+    state=AgentRunState(
+        conversation={"external.conversation_id": "4f4f8c1b-b1f4-4c9f-9e9f-0f144af69f10"},
+    ),
+    params={},
+)
+```
+
+Runner will use the Dify UUID as the Dify conversation ID, maintaining session
+continuity.
+
+### Workflow Mode with Custom Inputs
+
+```python
+ctx = AgentRunContext(
+    run_id="run_002",
+    input=AgentInput(text="Process this"),
+    config={
+        "base-url": "https://api.dify.ai/v1",
+        "api-key": "app-yyy",
+        "app-type": "workflow",
+    },
+    params={
+        "custom_var": "value1",
+        "workflow_input": "data",
+    },
+)
+```
+
+Runner passes `params` to Dify workflow inputs.
+
+## Replaced Runner
+
+Migrated from `dify-service-api` in LangBot.
+
+### Key Changes
+
+1. **Config is static only**: No `conversation_id` in config
+2. **State via protocol**: Use `ctx.state` and `state.updated`
+3. **Inputs via adapter params**: Use `ctx.adapter.extra.params` for workflow inputs
+4. **Scoped state**: `external.conversation_id` with `scope="conversation"`

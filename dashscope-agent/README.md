@@ -1,51 +1,92 @@
 # DashScope Agent
 
-DashScope Agent 将阿里云百炼 Agent 或 Workflow 应用接入 LangBot AgentRunner。插件调用 DashScope Application API，并把流式文本、引用信息和错误转换为 AgentRunner Protocol v1 事件。
+Run an Aliyun DashScope application as a LangBot AgentRunner.
 
 ## Runner ID
 
 `plugin:langbot-team/DashScopeAgent/default`
 
-## 主要能力
+## Configuration
 
-- 支持百炼 Agent 与 Workflow 两种应用类型。
-- 支持流式响应。
-- 支持引用信息拼接。
-- 可把 LangBot 本次运行的短期资产 token 注入 `biz_params`。
-- 可通过百炼应用配置的外部 MCP 服务访问 LangBot 工具、知识库和历史。
-
-## 配置
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `app-type` | `select` | 是 | `agent` | `agent` 或 `workflow` |
-| `api-key` | `secret` | 是 | 空 | DashScope API Key |
-| `app-id` | `string` | 是 | 空 | 百炼应用 ID |
-| `references_quote` | `string` | 否 | `参考资料来自:` | 引用信息前缀 |
-| `timeout` | `number` | 否 | `120` | 请求超时秒数 |
-| `langbot-assets-enabled` | `boolean` | 否 | `false` | 是否启用 LangBot 资产回调 |
-| `langbot-assets-gateway-host` | `string` | 否 | `0.0.0.0` | Asset Gateway 监听地址 |
-| `langbot-assets-gateway-port` | `integer` | 否 | `8765` | Asset Gateway 端口 |
-| `langbot-assets-gateway-request-timeout` | `integer` | 否 | `60` | 网关工具调用超时 |
-| `langbot-assets-token-ttl` | `integer` | 否 | `3600` | 运行 token 有效期 |
-| `langbot-assets-input-name` | `string` | 否 | `langbot_asset_run_token` | `biz_params` 中的 token 字段名 |
+| app-type | select | yes | agent | Application type (agent/workflow) |
+| api-key | secret | yes | '' | DashScope API key |
+| app-id | string | yes | '' | Application ID |
+| references_quote | string | no | 参考资料来自: | Quote text for references |
+| timeout | number | no | 120 | Request timeout in seconds |
+| langbot-assets-enabled | boolean | no | false | Register a short-lived LangBot asset token for each run and pass it via biz_params |
+| langbot-assets-gateway-host | string | no | 0.0.0.0 | Host for the local LangBot Asset Gateway |
+| langbot-assets-gateway-port | integer | no | 8765 | Port for the local LangBot Asset Gateway |
+| langbot-assets-gateway-request-timeout | integer | no | 60 | Timeout for individual gateway tool calls |
+| langbot-assets-token-ttl | integer | no | 3600 | Lifetime of each run token in seconds |
+| langbot-assets-input-name | string | no | langbot_asset_run_token | biz_params key that receives the run token |
 
-## LangBot 资产回调
+## Capabilities
 
-启用后，runner 将短期 token 放入 DashScope 请求的 `biz_params`。百炼应用需要挂载一个指向 Asset Gateway `/mcp` 的外部 MCP 服务，并确保应用 prompt 或工具参数把 `biz_params` 中的值作为 `run_token` 传给 LangBot MCP 工具。
+- `streaming`: yes
 
-发布前应在百炼控制台验证 MCP `initialize`、`tools/list` 和真实工具调用。若百炼应用未把 `biz_params` 转发到工具参数，LangBot 侧会拒绝无 token 的调用。
+## LangBot Asset Callback Through 百炼 MCP
 
-## 限制与安全
+The DashScope (百炼) agent app can call back into LangBot assets through the SDK
+Asset Gateway, the same mechanism the Dify runner uses. The gateway is a
+run-token-authorized MCP server (`POST /mcp`, JSON-RPC) exposing the
+run-authorized LangBot tools: `langbot_list_assets`,
+`langbot_get_current_event`, `langbot_history_page`,
+`langbot_retrieve_knowledge`, `langbot_get_tool_detail`, and `langbot_call_tool`.
 
-- API key 使用密钥字段保存。
-- 远程百炼服务需要可公开访问的 HTTPS 网关。
-- token 只在当前运行有效，不能作为长期凭据。
-- 多模态能力取决于百炼应用和模型配置；当前 runner 主要面向文本应用。
+### How it works
 
-## 开发检查
+1. When `langbot-assets-enabled` is true, this runner registers a short-lived,
+   run-scoped token before calling the app and passes it through DashScope
+   `biz_params` under the key `langbot-assets-input-name` (default
+   `langbot_asset_run_token`). This works for both `agent` and `workflow` app
+   types; the asset callback needs the **agent** app type (tool-calling).
+2. The 百炼 app references that value (e.g. via a prompt/plugin variable bound to
+   `biz_params`) and passes it as the `run_token` argument on every LangBot MCP
+   tool call.
+3. The runner removes the token when the run ends. Tool calls without a valid
+   token are rejected by the gateway.
 
-```bash
-uv run --no-sync pytest -q
-uv run --no-sync ruff check .
+The gateway accepts the token via an `Authorization: Bearer` header or via a
+`run_token` tool-call argument. Use the **`run_token` argument** approach here.
+
+### Configure 百炼
+
+1. In the 百炼 agent app, attach the LangBot Asset Gateway as an MCP service whose
+   URL routes to the gateway `/mcp` (a public HTTPS URL for 百炼 Cloud).
+2. Add an app input/variable bound to `biz_params.langbot_asset_run_token`.
+3. In the app prompt, instruct the agent to pass that value as `run_token` on
+   every LangBot MCP tool call, and to call `langbot_list_assets` first when it
+   needs to discover the run's assets.
+
+### Configure LangBot
+
+Select the DashScope runner and set:
+
+```text
+app-type = agent
+api-key = <DashScope API key>
+app-id = <百炼 app id>
+langbot-assets-enabled = true
+langbot-assets-gateway-host = 0.0.0.0
+langbot-assets-gateway-port = 8765
+langbot-assets-token-ttl = 3600
+langbot-assets-input-name = langbot_asset_run_token
 ```
+
+### Limitations
+
+- 百炼 Cloud cannot reach `localhost`; use a public HTTPS URL for the gateway
+  `/mcp` endpoint.
+- The run token is short-lived and run-scoped; the app must complete its asset
+  callbacks within the app run.
+- The gateway exposes only the assets permitted by the current run: current
+  event, history page, knowledge retrieval, tool detail, and tool call.
+- The 百炼 app must support attaching an external MCP service and forwarding the
+  `biz_params` value into the tool call. Verify the `tools/list` handshake and
+  end-to-end token passing in your 百炼 app before relying on it.
+
+## Legacy Runner
+
+Migrated from `dashscope-app-api` in LangBot.

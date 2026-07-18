@@ -1,49 +1,91 @@
 # Coze Agent
 
-Coze Agent 将 Coze（扣子）机器人接入 LangBot AgentRunner，负责把 LangBot 输入转换为 Coze Chat API 请求，并将 Coze 的流式回复、会话状态和错误事件转换为 AgentRunner Protocol v1 结果。
+Run a Coze bot as a LangBot AgentRunner.
 
 ## Runner ID
 
 `plugin:langbot-team/CozeAgent/default`
 
-## 主要能力
+## Configuration
 
-- 支持 Coze 中国站和全球站 API。
-- 支持流式回复。
-- 支持文本和图片输入。
-- 支持在 LangBot 会话状态中持久化 Coze conversation ID。
-- 可自动保存 Coze 对话历史。
-- 可通过 SDK Asset Gateway 向 Coze Agent 暴露本次运行授权的 LangBot 工具、知识库和历史。
-
-## 配置
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `api-key` | `secret` | 是 | 空 | Coze Personal Access Token 或 API Token |
-| `bot-id` | `string` | 是 | 空 | Coze Bot ID |
-| `api-base` | `select` | 是 | `https://api.coze.cn` | 中国站或全球站 API 地址 |
-| `auto-save-history` | `boolean` | 否 | `true` | 是否让 Coze 保存会话历史 |
-| `timeout` | `number` | 否 | `120` | 请求超时秒数 |
-| `langbot-assets-enabled` | `boolean` | 否 | `false` | 是否启用 LangBot 资产回调 |
-| `langbot-assets-gateway-host` | `string` | 否 | `0.0.0.0` | Asset Gateway 监听地址 |
-| `langbot-assets-gateway-port` | `integer` | 否 | `8765` | Asset Gateway 端口 |
-| `langbot-assets-gateway-request-timeout` | `integer` | 否 | `60` | 网关工具调用超时 |
-| `langbot-assets-token-ttl` | `integer` | 否 | `3600` | 运行令牌有效期秒数 |
-| `langbot-assets-input-name` | `string` | 否 | `langbot_asset_run_token` | 注入 Coze `custom_variables` 的字段名 |
+| api-key | secret | yes | '' | Coze API key |
+| bot-id | string | yes | '' | Bot ID |
+| api-base | select | yes | https://api.coze.cn | API base URL (CN or Global) |
+| auto-save-history | boolean | no | true | Auto-save conversation history |
+| timeout | number | no | 120 | Request timeout (seconds) |
+| langbot-assets-enabled | boolean | no | false | Register a short-lived LangBot asset token for each run and pass it via custom_variables |
+| langbot-assets-gateway-host | string | no | 0.0.0.0 | Host for the local LangBot Asset Gateway |
+| langbot-assets-gateway-port | integer | no | 8765 | Port for the local LangBot Asset Gateway |
+| langbot-assets-gateway-request-timeout | integer | no | 60 | Timeout for individual gateway tool calls |
+| langbot-assets-token-ttl | integer | no | 3600 | Lifetime of each run token in seconds |
+| langbot-assets-input-name | string | no | langbot_asset_run_token | custom_variables key that receives the run token |
 
-## LangBot 资产回调
+## Capabilities
 
-启用后，runner 会为每次运行生成短期 token，并通过 Coze `custom_variables` 发送给 Bot。Coze Bot 需要提前配置可访问 Asset Gateway `/mcp` 的 MCP 工具，并在每次工具调用中把该变量作为 `run_token` 传入。
+- `streaming`: yes
+- `multimodal_input`: yes
 
-远程 Coze 服务无法访问 `localhost`。生产环境应使用稳定的 HTTPS 域名反向代理网关；临时 tunnel 只适合测试。运行结束后 token 会立即注销，Coze 工具调用必须在当前 Chat API 请求生命周期内完成。
+## LangBot Asset Callback Through Coze MCP
 
-## 状态与安全
+A Coze bot can call back into LangBot assets through the SDK Asset Gateway, the
+same mechanism the Dify runner uses. The gateway is a run-token-authorized MCP
+server (`POST /mcp`, JSON-RPC) exposing the run-authorized LangBot tools:
+`langbot_list_assets`, `langbot_get_current_event`, `langbot_history_page`,
+`langbot_retrieve_knowledge`, `langbot_get_tool_detail`, and `langbot_call_tool`.
 
-外部 conversation ID 存放在 Host 管理的会话状态中，不写入静态配置。API key 使用密钥输入框保存。Asset Gateway 只暴露当前运行授权的事件、历史、知识库与工具能力，不能跨运行访问其他资源。
+### How it works
 
-## 开发检查
+1. When `langbot-assets-enabled` is true, this runner registers a short-lived,
+   run-scoped token before calling the bot and passes it through Coze
+   `custom_variables` under the key `langbot-assets-input-name` (default
+   `langbot_asset_run_token`).
+2. The bot prompt references it as `{{langbot_asset_run_token}}` and passes it as
+   the `run_token` argument on every LangBot MCP tool call.
+3. The runner removes the token when the run ends. Tool calls without a valid
+   token are rejected by the gateway.
 
-```bash
-uv run --no-sync pytest -q
-uv run --no-sync ruff check .
+The gateway accepts the token via an `Authorization: Bearer` header or via a
+`run_token` tool-call argument. Use the **`run_token` argument** approach here.
+
+### Configure Coze
+
+1. Add the LangBot Asset Gateway as an MCP plugin/tool on the bot, with a URL
+   routing to the gateway `/mcp` (a public HTTPS URL for Coze Cloud).
+2. Declare a bot variable named `langbot_asset_run_token` (matching
+   `langbot-assets-input-name`) so `custom_variables` can populate it.
+3. In the bot prompt, instruct it to pass `{{langbot_asset_run_token}}` as
+   `run_token` on every LangBot MCP tool call, and to call `langbot_list_assets`
+   first when it needs to discover the run's assets.
+
+### Configure LangBot
+
+Select the Coze runner and set:
+
+```text
+api-key = <Coze API key>
+bot-id = <bot id>
+api-base = https://api.coze.cn
+langbot-assets-enabled = true
+langbot-assets-gateway-host = 0.0.0.0
+langbot-assets-gateway-port = 8765
+langbot-assets-token-ttl = 3600
+langbot-assets-input-name = langbot_asset_run_token
 ```
+
+### Limitations
+
+- Coze Cloud cannot reach `localhost`; use a public HTTPS URL for the gateway
+  `/mcp` endpoint.
+- The run token is short-lived and run-scoped; the bot must complete its asset
+  callbacks within the chat run.
+- The gateway exposes only the assets permitted by the current run: current
+  event, history page, knowledge retrieval, tool detail, and tool call.
+- The bot must support attaching an external MCP tool and forwarding the
+  `custom_variables` value into the tool call. Verify the `tools/list` handshake
+  and end-to-end token passing in your bot before relying on it.
+
+## Legacy Runner
+
+Migrated from `coze-api` in LangBot.

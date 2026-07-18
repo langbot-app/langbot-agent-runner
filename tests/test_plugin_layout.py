@@ -131,8 +131,11 @@ def test_plugins_have_publishable_marketplace_metadata() -> None:
         assert set(metadata["label"]) == MARKETPLACE_LOCALES
         assert set(metadata["description"]) == MARKETPLACE_LOCALES
         root_readme = (plugin_root / "README.md").read_text(encoding="utf-8")
-        assert len(root_readme.encode("utf-8")) >= 2_000
-        assert any("\u4e00" <= char <= "\u9fff" for char in root_readme)
+        english_readme = (plugin_root / "readme" / "README_en_US.md").read_text(encoding="utf-8")
+        zh_hans_readme = (plugin_root / "readme" / "README_zh_Hans.md").read_text(encoding="utf-8")
+        assert root_readme == english_readme
+        assert len(root_readme.encode("utf-8")) >= 1_000
+        assert any("\u4e00" <= char <= "\u9fff" for char in zh_hans_readme)
         assert all(field in root_readme for field in config_fields)
         assert runner_id in root_readme
         assert {path.name for path in (plugin_root / "readme").glob("README_*.md")} == expected_readmes

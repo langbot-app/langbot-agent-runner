@@ -1,67 +1,57 @@
 # Claude Code Agent
 
-Claude Code Agent 将 Claude Code CLI 以非交互模式接入 LangBot AgentRunner。它可以在 LangBot 本机、SSH 远端或用户侧 daemon 上运行，并通过 SDK MCP bridge 向 Claude Code 提供本次运行授权的 LangBot 工具和资源。
+## Overview
 
-## Runner ID
+Run Claude Code CLI as a LangBot AgentRunner.
 
-`plugin:langbot-team/ClaudeCodeAgent/default`
+## Package information
 
-## 前置条件
+- **Runner ID**: `plugin:langbot-team/ClaudeCodeAgent/default`
+- **Version**: `0.1.2`
+- **Repository**: [https://github.com/langbot-app/langbot-agent-runner](https://github.com/langbot-app/langbot-agent-runner)
 
-- 运行位置已经安装 Claude Code CLI。
-- Claude Code 已在对应机器完成认证。
-- 配置的工作区存在且运行用户有访问权限。
-- 使用 SSH 或 daemon 时，网络和认证配置可用。
+## Capabilities
 
-## 运行模式
+- **Enabled**: `streaming`, `tool calling`, `knowledge retrieval`, `steering`
+- **Not declared**: `multimodal input`, `interrupt`
 
-- `local`：运行 `claude -p --verbose --output-format stream-json`。
-- `remote-ssh`：通过 SSH 在远端运行同一命令，并使用 SDK 反向隧道连接 LangBot MCP 资源。
-- `daemon`：用户侧 daemon 主动连接 LangBot，在用户机器上启动 Claude Code。
+## Configuration
 
-## 插件级 Daemon 配置
-
-| 字段 | 类型 | 默认值 | 说明 |
+| Field | Type | Required | Default |
 | --- | --- | --- | --- |
-| `daemon-enabled` | `boolean` | `false` | 是否启动 daemon Hub |
-| `daemon-host` | `string` | `127.0.0.1` | Hub 监听地址 |
-| `daemon-port` | `integer` | `8767` | Hub 端口 |
-| `daemon-token` | `secret` | 空 | daemon 共享令牌 |
+| `daemon-enabled` | `boolean` | No | false |
+| `daemon-host` | `string` | No | `127.0.0.1` |
+| `daemon-port` | `integer` | No | `8767` |
+| `daemon-token` | `secret` | No | Empty |
+| `location` | `select` | Yes | `local` |
+| `workspace` | `string` | No | Empty |
+| `command` | `string` | No | `claude` |
+| `args-json` | `string` | No | `[]` |
+| `env-json` | `string` | No | `{}` |
+| `ssh-target` | `string` | No | Empty |
+| `ssh-port` | `integer` | No | `22` |
+| `daemon-id` | `string` | No | Empty |
+| `timeout` | `integer` | No | `300` |
+| `streaming` | `boolean` | No | true |
+| `reuse-session` | `boolean` | No | true |
+| `langbot-assets-enabled` | `boolean` | No | true |
+| `mcp-bridge-transport` | `select` | No | `auto` |
+| `mcp-servers-json` | `string` | No | `[]` |
 
-## Runner 配置
+## Host permissions
 
-| 字段 | 说明 |
-| --- | --- |
-| `location` | `local`、`remote-ssh` 或 `daemon` |
-| `workspace` | Claude Code 工作目录 |
-| `command` | Claude CLI 命令；不在 `PATH` 时可填写绝对路径 |
-| `args-json` | 追加的命令参数 JSON |
-| `env-json` | 追加的环境变量 JSON |
-| `ssh-target` / `ssh-port` | SSH 目标和端口 |
-| `daemon-id` | daemon 客户端 ID |
-| `timeout` | 运行超时秒数 |
-| `streaming` | 是否输出流式增量 |
-| `reuse-session` | 是否复用 Claude Code session |
-| `langbot-assets-enabled` | 是否注入 LangBot 授权资源 |
-| `mcp-bridge-transport` | MCP bridge 传输方式 |
-| `mcp-servers-json` | 额外 MCP server 配置 |
+- **`tools`**: `detail`, `call`
+- **`knowledge_bases`**: `retrieve`
+- **`history`**: `page`
 
-## Session 与 Steering
+## Installation and usage
 
-runner 首次运行使用 `--session-id` 创建 session，后续运行可通过 `claude --resume <session-id>` 恢复。同一 LangBot 会话在 Agent 仍运行时收到新消息，Host 会把消息吸收到当前运行；runner 在 turn 边界拉取 steering 输入，并以同一 Claude Code session 继续执行。
+1. Install the plugin from the LangBot plugin marketplace.
+2. Select the Runner ID below in the Pipeline AgentRunner selector.
+3. Fill in connection settings from the table and store credentials in secret fields in the admin UI.
 
-steering 当前只在 turn 之间注入，不会打断正在输出的 token；跟进消息中的附件暂不转发。没有会话范围时，runner 会退化为普通单轮执行。
+## Security and limitations
 
-## 安全说明
-
-- 不要把 Claude 认证信息写入普通配置字段或命令参数。
-- SSH 私钥路径应限制文件权限。
-- daemon Hub 对外暴露时必须使用 token，并建议通过 TLS 反向代理提供服务。
-- Claude Code 获得的 LangBot 工具只限当前运行授权范围。
-
-## 开发检查
-
-```bash
-uv run --no-sync pytest -q
-uv run --no-sync ruff check .
-```
+- The runner can use only LangBot resources authorized for the current run.
+- Availability, model abilities, and rate limits depend on the external service.
+- See the full Chinese README at the package root for advanced behavior and product-specific limitations.

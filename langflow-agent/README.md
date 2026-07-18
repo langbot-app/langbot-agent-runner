@@ -1,56 +1,99 @@
 # Langflow Agent
 
-Langflow Agent 将 Langflow flow 接入 LangBot AgentRunner。插件调用 Langflow Run API，把 LangBot 输入映射到 flow，并从 Langflow 响应中提取最终消息。启用 Asset Gateway 后，还可以向 flow 注入当前运行的短期 LangBot 资产 token。
+Run a Langflow flow as a LangBot AgentRunner.
 
 ## Runner ID
 
 `plugin:langbot-team/LangflowAgent/default`
 
-## 主要能力
+## Configuration
 
-- 支持 Langflow 本地或远程部署。
-- 支持 flow input/output 类型和 tweaks 配置。
-- 支持流式结果适配。
-- 可通过 tweak 向指定组件注入 LangBot 运行 token。
-- 可让 flow 中的 Agent 通过 MCP 工具访问 LangBot 授权资源。
-
-## 配置
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `base-url` | `string` | 是 | `http://localhost:7860` | Langflow 服务地址 |
-| `api-key` | `secret` | 是 | 空 | Langflow API key |
-| `flow-id` | `string` | 是 | 空 | 目标 flow ID |
-| `input-type` | `string` | 否 | `chat` | Langflow input type |
-| `output-type` | `string` | 否 | `chat` | Langflow output type |
-| `tweaks` | `json` | 否 | `{}` | 发送给 flow 的 tweaks JSON |
-| `langbot-assets-enabled` | `boolean` | 否 | `false` | 是否启用 LangBot 资产回调 |
-| `langbot-assets-gateway-host` | `string` | 否 | `0.0.0.0` | Asset Gateway 监听地址 |
-| `langbot-assets-gateway-port` | `integer` | 否 | `8765` | 网关端口 |
-| `langbot-assets-gateway-request-timeout` | `integer` | 否 | `60` | 网关调用超时 |
-| `langbot-assets-token-ttl` | `integer` | 否 | `3600` | 运行 token 有效期 |
-| `langbot-assets-input-name` | `string` | 否 | `langbot_asset_run_token` | 接收 token 的 flow 组件名称或 ID |
+| base-url | string | yes | http://localhost:7860 | Langflow server URL |
+| api-key | secret | yes | '' | Langflow API key |
+| flow-id | string | yes | '' | Flow ID |
+| input-type | string | no | chat | Input type |
+| output-type | string | no | chat | Output type |
+| tweaks | json | no | {} | Flow tweaks |
+| langbot-assets-enabled | boolean | no | false | Register a short-lived LangBot asset token for each run and inject it into the flow via a tweak |
+| langbot-assets-gateway-host | string | no | 0.0.0.0 | Host for the local LangBot Asset Gateway |
+| langbot-assets-gateway-port | integer | no | 8765 | Port for the local LangBot Asset Gateway |
+| langbot-assets-gateway-request-timeout | integer | no | 60 | Timeout for individual gateway tool calls |
+| langbot-assets-token-ttl | integer | no | 3600 | Lifetime of each run token in seconds |
+| langbot-assets-input-name | string | no | langbot_asset_run_token | Flow component (name/id) whose `input_value` receives the run token |
 
-## LangBot 资产回调
+## LangBot Asset Callback Through Langflow MCP Tools
 
-启用后，runner 会修改本次请求的 tweaks，把短期 token 写入 `langbot-assets-input-name` 对应组件的 `input_value`。flow 需要包含：
+Langflow can call back into LangBot assets through the SDK Asset Gateway, the same
+mechanism the Dify runner uses. The gateway is a run-token-authorized MCP server
+(`POST /mcp`, JSON-RPC) exposing the run-authorized LangBot tools:
+`langbot_list_assets`, `langbot_get_current_event`, `langbot_history_page`,
+`langbot_retrieve_knowledge`, `langbot_get_tool_detail`, and `langbot_call_tool`.
 
-1. 一个名称或 ID 与配置相同的 Text Input 组件。
-2. 一个使用 Streamable HTTP、指向 Asset Gateway `/mcp` 的 MCP Tools 组件。
-3. 一个连接 MCP Tools 的 Agent 组件。
-4. 明确要求 Agent 在每次 LangBot 工具调用中传递 `run_token` 的 prompt。
+### How it works
 
-## 限制与安全
+1. When `langbot-assets-enabled` is true, this runner registers a short-lived,
+   run-scoped token before calling the flow and injects it into the run via a
+   tweak: it sets the `input_value` of the component named by
+   `langbot-assets-input-name` (default `langbot_asset_run_token`) to the token.
+2. The flow's Agent reads that value and passes it as the `run_token` argument on
+   every LangBot MCP tool call.
+3. The runner removes the token when the run ends. Tool calls without a valid
+   token are rejected by the gateway.
 
-- 远程 Langflow 无法访问本机 `localhost` 时，需要公开 HTTPS 网关。
-- flow 中不存在目标 token 组件时，tweak 注入不会生效。
-- token 只在当前 flow 请求期间有效。
-- `tweaks` 必须是合法 JSON；错误组件 ID 会由 Langflow 返回诊断信息。
-- API key 使用密钥字段保存。
+The gateway accepts the token via an `Authorization: Bearer` header or via a
+`run_token` tool-call argument. Use the **`run_token` argument** approach here.
 
-## 开发检查
+### Build the flow
 
-```bash
-uv run --no-sync pytest -q
-uv run --no-sync ruff check .
+1. Add a **Text Input** (or similar) component whose name/id matches
+   `langbot-assets-input-name`. The runner sets its `input_value` to the token
+   each run. (Leave its value empty by default.)
+2. Add an **MCP Tools / MCP Connection** component:
+   - Transport: streamable HTTP.
+   - URL: the public URL routing to the gateway `/mcp`, e.g. `https://example.com/mcp`.
+3. Add an **Agent** component, attach the MCP Tools, and wire the token component
+   into the Agent so its instructions pass `run_token` on every LangBot tool call,
+   for example:
+
+   ```text
+   For every LangBot MCP tool call, set run_token exactly to the provided
+   LangBot run token. Call langbot_list_assets first to discover available
+   LangBot assets for the current run.
+   ```
+
+### Configure LangBot
+
+Select the Langflow runner and set:
+
+```text
+base-url = http://localhost:7860
+api-key = <Langflow API key>
+flow-id = <flow id>
+langbot-assets-enabled = true
+langbot-assets-gateway-host = 0.0.0.0
+langbot-assets-gateway-port = 8765
+langbot-assets-token-ttl = 3600
+langbot-assets-input-name = langbot_asset_run_token
 ```
+
+The public MCP URL in the flow's MCP component must route to this same gateway
+instance. The runner only injects the short-lived token into the flow tweak; it
+does not create or update the flow's MCP component.
+
+### Limitations
+
+- A remote/cloud Langflow that cannot reach `localhost` needs a public HTTPS URL
+  for the gateway `/mcp` endpoint.
+- The run token is short-lived and run-scoped; the flow must complete its asset
+  callbacks within the flow run.
+- The gateway exposes only the assets permitted by the current run: current
+  event, history page, knowledge retrieval, tool detail, and tool call.
+- The flow must have a component whose name/id matches `langbot-assets-input-name`
+  for the tweak injection to land; otherwise the token never reaches the Agent.
+  Verify the `tools/list` handshake against your gateway when setting this up.
+
+## Legacy Runner
+
+Migrated from `langflow-api` in LangBot.
