@@ -27,7 +27,7 @@ spec:
       description:
         en_US: API key generated from WeKnora Settings -> API Keys.
         zh_Hans: 从 WeKnora 设置 -> API Keys 生成的 API 密钥。
-      type: string
+      type: secret
       required: true
       default: ''
     - name: app-type
@@ -63,7 +63,7 @@ spec:
       description:
         en_US: WeKnora knowledge base IDs to use.
         zh_Hans: 要使用的 WeKnora 知识库 ID 列表。
-      type: array
+      type: array[string]
       required: false
       default: []
     - name: web-search-enabled

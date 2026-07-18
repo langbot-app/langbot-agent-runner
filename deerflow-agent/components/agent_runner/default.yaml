@@ -27,7 +27,7 @@ spec:
       description:
         en_US: Optional API key for DeerFlow. Leave empty if the server does not require authentication.
         zh_Hans: DeerFlow API 密钥。如果服务端不需要鉴权可留空。
-      type: string
+      type: secret
       required: false
       default: ''
     - name: auth-header
@@ -37,7 +37,7 @@ spec:
       description:
         en_US: Optional complete Authorization header value. When set, it takes precedence over api-key.
         zh_Hans: 可选的完整 Authorization 请求头值。设置后优先于 api-key。
-      type: string
+      type: secret
       required: false
       default: ''
     - name: assistant-id

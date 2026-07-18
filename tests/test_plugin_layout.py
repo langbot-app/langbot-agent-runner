@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import re
 import sys
 import tomllib
 import types
@@ -19,18 +20,48 @@ from langbot_plugin.api.entities.builtin.agent_runner import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_DIRS = {
-    "acp-agent-runner",
-    "claude-code-agent",
-    "codex-agent",
-    "coze-agent",
-    "dashscope-agent",
-    "deerflow-agent",
-    "dify-agent",
-    "langflow-agent",
-    "n8n-agent",
-    "tbox-agent",
-    "weknora-agent",
+PLUGIN_NAMES = {
+    "acp-agent-runner": "ACPAgentRunner",
+    "claude-code-agent": "ClaudeCodeAgent",
+    "codex-agent": "CodexAgent",
+    "coze-agent": "CozeAgent",
+    "dashscope-agent": "DashScopeAgent",
+    "deerflow-agent": "DeerFlowAgent",
+    "dify-agent": "DifyAgent",
+    "langflow-agent": "LangflowAgent",
+    "n8n-agent": "N8nAgent",
+    "tbox-agent": "TboxAgent",
+    "weknora-agent": "WeKnoraAgent",
+}
+PLUGIN_DIRS = set(PLUGIN_NAMES)
+MARKETPLACE_LOCALES = {
+    "en_US",
+    "zh_Hans",
+    "zh_Hant",
+    "ja_JP",
+    "th_TH",
+    "vi_VN",
+    "es_ES",
+    "ru_RU",
+}
+SUPPORTED_FORM_TYPES = {
+    "array[string]",
+    "boolean",
+    "integer",
+    "json",
+    "number",
+    "secret",
+    "select",
+    "string",
+    "text",
+}
+SENSITIVE_CONFIG_FIELDS = {
+    "api-key",
+    "auth-header",
+    "basic-password",
+    "daemon-token",
+    "header-value",
+    "jwt-secret",
 }
 
 
@@ -66,8 +97,9 @@ def test_official_external_runner_plugins_have_protocol_v1_manifests() -> None:
         manifest = _load_yaml(ROOT / plugin_dir / "manifest.yaml")
         runner = _load_yaml(ROOT / plugin_dir / "components" / "agent_runner" / "default.yaml")
 
-        assert manifest["metadata"]["author"] == "langbot"
-        assert manifest["metadata"]["name"] == plugin_dir
+        assert manifest["metadata"]["author"] == "langbot-team"
+        assert manifest["metadata"]["name"] == PLUGIN_NAMES[plugin_dir]
+        assert re.fullmatch(r"[A-Z][A-Za-z0-9]*", manifest["metadata"]["name"])
         assert runner["apiVersion"] == "langbot/v1"
         assert runner["kind"] == "AgentRunner"
         assert runner["metadata"]["name"] == "default"
@@ -76,6 +108,52 @@ def test_official_external_runner_plugins_have_protocol_v1_manifests() -> None:
         assert "protocol_version" not in runner["spec"]
         assert runner["execution"]["python"]["path"] == "default.py"
         assert runner["execution"]["python"]["attr"] == "DefaultAgentRunner"
+
+
+def test_plugins_have_publishable_marketplace_metadata() -> None:
+    expected_readmes = {f"README_{locale}.md" for locale in MARKETPLACE_LOCALES}
+
+    for plugin_dir in PLUGIN_DIRS:
+        plugin_root = ROOT / plugin_dir
+        manifest = _load_yaml(plugin_root / "manifest.yaml")
+        runner = _load_yaml(plugin_root / "components" / "agent_runner" / "default.yaml")
+        metadata = manifest["metadata"]
+        runner_id = f"plugin:{metadata['author']}/{metadata['name']}/{runner['metadata']['name']}"
+        config_fields = [
+            item["name"]
+            for item in manifest["spec"].get("config", []) + runner["spec"].get("config", [])
+        ]
+
+        assert manifest["apiVersion"] == "v1"
+        assert "version" not in manifest["spec"]
+        assert re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", metadata["version"])
+        assert metadata["repository"] == "https://github.com/langbot-app/langbot-agent-runner"
+        assert set(metadata["label"]) == MARKETPLACE_LOCALES
+        assert set(metadata["description"]) == MARKETPLACE_LOCALES
+        root_readme = (plugin_root / "README.md").read_text(encoding="utf-8")
+        assert len(root_readme.encode("utf-8")) >= 2_000
+        assert any("\u4e00" <= char <= "\u9fff" for char in root_readme)
+        assert all(field in root_readme for field in config_fields)
+        assert runner_id in root_readme
+        assert {path.name for path in (plugin_root / "readme").glob("README_*.md")} == expected_readmes
+        for readme_name in expected_readmes:
+            localized_readme = (plugin_root / "readme" / readme_name).read_text(encoding="utf-8")
+            assert len(localized_readme.encode("utf-8")) >= 1_000
+            assert all(field in localized_readme for field in config_fields)
+            assert runner_id in localized_readme
+
+
+def test_plugin_forms_use_supported_types_and_mask_sensitive_values() -> None:
+    for plugin_dir in PLUGIN_DIRS:
+        plugin_root = ROOT / plugin_dir
+        plugin_manifest = _load_yaml(plugin_root / "manifest.yaml")
+        runner_manifest = _load_yaml(plugin_root / "components" / "agent_runner" / "default.yaml")
+        fields = plugin_manifest["spec"].get("config", []) + runner_manifest["spec"].get("config", [])
+
+        for field in fields:
+            assert field["type"] in SUPPORTED_FORM_TYPES, (plugin_dir, field["name"], field["type"])
+            if field["name"] in SENSITIVE_CONFIG_FIELDS:
+                assert field["type"] == "secret", (plugin_dir, field["name"])
 
 
 def test_repository_builds_as_plugin_collection_not_import_package() -> None:
@@ -107,6 +185,30 @@ def test_bridge_runners_declare_bridge_related_capabilities() -> None:
     }
     assert dify_runner["spec"]["capabilities"]["tool_calling"] is True
     assert dify_runner["spec"]["capabilities"]["knowledge_retrieval"] is True
+
+
+def test_dify_runner_exposes_guided_and_masked_secret_config() -> None:
+    runner = _load_yaml(ROOT / "dify-agent" / "components" / "agent_runner" / "default.yaml")
+    config = {item["name"]: item for item in runner["spec"]["config"]}
+
+    assert config["api-key"]["type"] == "secret"
+    assert config["base-prompt"]["type"] == "text"
+    assert config["base-url"]["description"]["en_US"]
+    assert config["app-type"]["description"]["zh_Hans"]
+
+    advanced_fields = {
+        "langbot-assets-gateway-host",
+        "langbot-assets-gateway-port",
+        "langbot-assets-gateway-request-timeout",
+        "langbot-assets-token-ttl",
+        "langbot-assets-input-name",
+    }
+    for field_name in advanced_fields:
+        assert config[field_name]["show_if"] == {
+            "field": "langbot-assets-enabled",
+            "operator": "eq",
+            "value": True,
+        }
 
 
 def test_acp_provider_presets_match_runner_config() -> None:

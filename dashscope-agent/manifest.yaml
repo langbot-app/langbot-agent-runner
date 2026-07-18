@@ -1,17 +1,30 @@
-apiVersion: langbot/v1
+apiVersion: v1
 kind: Plugin
 metadata:
-  author: langbot
-  name: dashscope-agent
+  author: langbot-team
+  name: DashScopeAgent
+  version: 0.1.0
+  repository: https://github.com/langbot-app/langbot-agent-runner
   label:
     en_US: Dashscope Agent
     zh_Hans: 百炼 Agent
+    zh_Hant: DashScope Agent
+    ja_JP: DashScope Agent
+    th_TH: DashScope Agent
+    vi_VN: DashScope Agent
+    es_ES: Agente DashScope
+    ru_RU: Агент DashScope
   description:
     en_US: Run an Aliyun DashScope application as a LangBot AgentRunner.
     zh_Hans: 将阿里云百炼应用作为 LangBot AgentRunner 运行。
+    zh_Hant: 將阿里雲 DashScope 應用程式作為 LangBot AgentRunner 執行。
+    ja_JP: Alibaba Cloud DashScope アプリを LangBot AgentRunner として実行します。
+    th_TH: เรียกใช้แอป Aliyun DashScope เป็น LangBot AgentRunner
+    vi_VN: Chạy ứng dụng Aliyun DashScope dưới dạng LangBot AgentRunner.
+    es_ES: Ejecuta una aplicación de Aliyun DashScope como LangBot AgentRunner.
+    ru_RU: Запускает приложение Aliyun DashScope как LangBot AgentRunner.
   icon: assets/icon.svg
 spec:
-  version: 0.1.0
   config: []
   components:
     AgentRunner:

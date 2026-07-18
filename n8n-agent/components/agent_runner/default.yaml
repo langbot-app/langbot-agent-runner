@@ -52,14 +52,14 @@ spec:
       label:
         en_US: Password
         zh_Hans: 密码
-      type: string
+      type: secret
       required: false
       default: ''
     - name: jwt-secret
       label:
         en_US: Secret
         zh_Hans: 密钥
-      type: string
+      type: secret
       required: false
       default: ''
     - name: jwt-algorithm
@@ -80,7 +80,7 @@ spec:
       label:
         en_US: Header Value
         zh_Hans: 请求头值
-      type: string
+      type: secret
       required: false
       default: ''
     - name: timeout

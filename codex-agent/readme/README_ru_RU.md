@@ -1,0 +1,57 @@
+# Codex Agent
+
+## Обзор
+
+Запускает Codex CLI как LangBot AgentRunner.
+
+## Информация о пакете
+
+- **Runner ID**: `plugin:langbot-team/CodexAgent/default`
+- **Версия**: `0.1.7`
+- **Репозиторий**: [https://github.com/langbot-app/langbot-agent-runner](https://github.com/langbot-app/langbot-agent-runner)
+
+## Основные возможности
+
+- **Включено**: `streaming`, `tool calling`, `knowledge retrieval`, `steering`
+- **Не заявлено**: `multimodal input`, `interrupt`
+
+## Настройка
+
+| Поле | Тип | Обязательно | По умолчанию |
+| --- | --- | --- | --- |
+| `daemon-enabled` | `boolean` | Нет | false |
+| `daemon-host` | `string` | Нет | `127.0.0.1` |
+| `daemon-port` | `integer` | Нет | `8768` |
+| `daemon-token` | `secret` | Нет | Пусто |
+| `location` | `select` | Да | `local` |
+| `workspace` | `string` | Нет | Пусто |
+| `command` | `string` | Нет | `codex` |
+| `args-json` | `string` | Нет | `[]` |
+| `env-json` | `string` | Нет | `{}` |
+| `ssh-target` | `string` | Нет | Пусто |
+| `ssh-port` | `integer` | Нет | `22` |
+| `daemon-id` | `string` | Нет | Пусто |
+| `timeout` | `integer` | Нет | `300` |
+| `streaming` | `boolean` | Нет | true |
+| `reuse-session` | `boolean` | Нет | true |
+| `langbot-assets-enabled` | `boolean` | Нет | true |
+| `mcp-bridge-transport` | `select` | Нет | `auto` |
+| `mcp-servers-json` | `string` | Нет | `[]` |
+
+## Разрешения Host
+
+- **`tools`**: `detail`, `call`
+- **`knowledge_bases`**: `retrieve`
+- **`history`**: `page`
+
+## Установка и использование
+
+1. Установите плагин из магазина плагинов LangBot.
+2. Выберите указанный Runner ID в селекторе AgentRunner вашего Pipeline.
+3. Заполните параметры подключения по таблице и храните секреты в полях secret панели управления.
+
+## Безопасность и ограничения
+
+- Runner использует только ресурсы LangBot, разрешённые для текущего запуска.
+- Доступность, возможности моделей и лимиты запросов зависят от внешнего сервиса.
+- Расширенное поведение и ограничения продукта описаны в китайском README в корне и английском README_en_US.md.

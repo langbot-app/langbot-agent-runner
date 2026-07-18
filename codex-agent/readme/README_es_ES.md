@@ -1,0 +1,57 @@
+# Codex Agent
+
+## Descripción general
+
+Ejecuta Codex CLI como LangBot AgentRunner.
+
+## Información del paquete
+
+- **Runner ID**: `plugin:langbot-team/CodexAgent/default`
+- **Versión**: `0.1.7`
+- **Repositorio**: [https://github.com/langbot-app/langbot-agent-runner](https://github.com/langbot-app/langbot-agent-runner)
+
+## Capacidades principales
+
+- **Activada**: `streaming`, `tool calling`, `knowledge retrieval`, `steering`
+- **No declarada**: `multimodal input`, `interrupt`
+
+## Configuración
+
+| Campo | Tipo | Obligatorio | Valor predeterminado |
+| --- | --- | --- | --- |
+| `daemon-enabled` | `boolean` | No | false |
+| `daemon-host` | `string` | No | `127.0.0.1` |
+| `daemon-port` | `integer` | No | `8768` |
+| `daemon-token` | `secret` | No | Vacío |
+| `location` | `select` | Sí | `local` |
+| `workspace` | `string` | No | Vacío |
+| `command` | `string` | No | `codex` |
+| `args-json` | `string` | No | `[]` |
+| `env-json` | `string` | No | `{}` |
+| `ssh-target` | `string` | No | Vacío |
+| `ssh-port` | `integer` | No | `22` |
+| `daemon-id` | `string` | No | Vacío |
+| `timeout` | `integer` | No | `300` |
+| `streaming` | `boolean` | No | true |
+| `reuse-session` | `boolean` | No | true |
+| `langbot-assets-enabled` | `boolean` | No | true |
+| `mcp-bridge-transport` | `select` | No | `auto` |
+| `mcp-servers-json` | `string` | No | `[]` |
+
+## Permisos del Host
+
+- **`tools`**: `detail`, `call`
+- **`knowledge_bases`**: `retrieve`
+- **`history`**: `page`
+
+## Instalación y uso
+
+1. Instala el plugin desde el mercado de plugins de LangBot.
+2. Selecciona el Runner ID indicado en el selector AgentRunner del Pipeline.
+3. Completa la conexión según la tabla y guarda los valores sensibles en campos secret del panel de administración.
+
+## Seguridad y limitaciones
+
+- El runner solo puede usar recursos de LangBot autorizados para la ejecución actual.
+- La disponibilidad, las capacidades del modelo y los límites de uso dependen del servicio externo.
+- Consulta el README chino de la raíz o README_en_US.md para el comportamiento avanzado y las limitaciones específicas.

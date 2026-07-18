@@ -30,7 +30,7 @@ spec:
       label:
         en_US: API Key
         zh_Hans: API 密钥
-      type: string
+      type: secret
       required: true
       default: ''
     - name: app-id
