@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
+import os
 import re
 import sys
 import tomllib
@@ -185,9 +187,11 @@ def test_bridge_runners_declare_bridge_related_capabilities() -> None:
         "knowledge_bases": ["retrieve"],
         "history": ["page"],
         "storage": ["plugin"],
+        "interactions": ["request"],
     }
     assert dify_runner["spec"]["capabilities"]["tool_calling"] is True
     assert dify_runner["spec"]["capabilities"]["knowledge_retrieval"] is True
+    assert dify_runner["spec"]["capabilities"]["interactions"] is True
 
 
 def test_dify_runner_exposes_guided_and_masked_secret_config() -> None:
@@ -665,7 +669,7 @@ def _write_fake_native_cli(path: Path) -> None:
                 "    if config_path.startswith('{'):",
                 "        print('mcp config passed as raw json', file=sys.stderr)",
                 "        raise SystemExit(3)",
-                "    if os.stat(config_path).st_mode & 0o777 != 0o600:",
+                "    if os.name != 'nt' and os.stat(config_path).st_mode & 0o777 != 0o600:",
                 "        print('mcp config mode is not 0600', file=sys.stderr)",
                 "        raise SystemExit(4)",
                 "    config = open(config_path, encoding='utf-8').read()",
@@ -743,10 +747,10 @@ def test_claude_code_runner_executes_fake_native_cli(tmp_path: Path) -> None:
     assert [item.type for item in results] == [
         "state.updated",
         "message.delta",
-        "message.completed",
         "run.completed",
     ]
-    assert results[2].data["message"]["content"] == "FAKE_NATIVE_OK:hello native"
+    assert results[1].data["chunk"]["content"] == "FAKE_NATIVE_OK:hello native"
+    assert "message" not in results[2].data
     assert results[0].data["key"] == "external.claude_code_session_id"
 
 
@@ -780,10 +784,39 @@ def test_claude_code_runner_passes_mcp_config_by_temp_file(tmp_path: Path) -> No
     assert [item.type for item in results] == [
         "state.updated",
         "message.delta",
+        "run.completed",
+    ]
+    assert results[1].data["chunk"]["content"] == "FAKE_NATIVE_OK:hello native"
+    assert "message" not in results[2].data
+
+
+def test_claude_code_runner_non_streaming_emits_one_message(tmp_path: Path) -> None:
+    fake_cli = tmp_path / "fake_native_cli.py"
+    _write_fake_native_cli(fake_cli)
+    module = _load_runner_module("claude-code-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    runner.get_run_api = lambda ctx: None
+
+    ctx = _native_ctx(
+        {
+            "location": "local",
+            "command": sys.executable,
+            "args-json": [str(fake_cli)],
+            "workspace": str(tmp_path),
+            "langbot-assets-enabled": False,
+            "streaming": False,
+        }
+    )
+    results = asyncio.run(_collect_async(runner.run(ctx)))
+
+    assert [item.type for item in results] == [
+        "state.updated",
         "message.completed",
         "run.completed",
     ]
-    assert results[2].data["message"]["content"] == "FAKE_NATIVE_OK:hello native"
+    assert results[1].data["message"]["content"] == "FAKE_NATIVE_OK:hello native"
+    assert "message" not in results[2].data
 
 
 def test_codex_runner_executes_fake_native_cli(tmp_path: Path) -> None:
@@ -807,16 +840,43 @@ def test_codex_runner_executes_fake_native_cli(tmp_path: Path) -> None:
     assert [item.type for item in results] == [
         "state.updated",
         "message.delta",
-        "message.completed",
         "run.completed",
     ]
     assert results[1].data["chunk"]["content"] == "FAKE_CODEX_APP_SERVER_OK:hello native"
     assert results[1].data["chunk"]["is_final"] is True
-    assert results[2].data["message"]["content"] == "FAKE_CODEX_APP_SERVER_OK:hello native"
-    assert results[3].data["message"]["content"] == "FAKE_CODEX_APP_SERVER_OK:hello native"
+    assert "message" not in results[2].data
     assert results[0].data["key"] == "external.codex_session_id"
     assert results[0].data["value"] == "thread-123"
-    assert [item.sequence for item in results] == [1, 2, 3, 4]
+    assert [item.sequence for item in results] == [1, 2, 3]
+
+
+def test_codex_runner_non_streaming_emits_one_message(tmp_path: Path) -> None:
+    fake_cli = tmp_path / "fake_codex_app_server.py"
+    _write_fake_codex_app_server(fake_cli)
+    module = _load_runner_module("codex-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    runner.get_run_api = lambda ctx: None
+
+    ctx = _native_ctx(
+        {
+            "location": "local",
+            "command": f"{sys.executable} {fake_cli}",
+            "workspace": str(tmp_path),
+            "langbot-assets-enabled": False,
+            "streaming": False,
+        }
+    )
+    results = asyncio.run(_collect_async(runner.run(ctx)))
+
+    assert [item.type for item in results] == [
+        "state.updated",
+        "message.completed",
+        "run.completed",
+    ]
+    assert results[1].data["message"]["content"] == "FAKE_CODEX_APP_SERVER_OK:hello native"
+    assert "message" not in results[2].data
+    assert [item.sequence for item in results] == [1, 2, 3]
 
 
 def test_codex_local_home_is_unique_per_resumed_run(tmp_path: Path) -> None:
@@ -852,6 +912,79 @@ def test_codex_local_home_is_unique_per_resumed_run(tmp_path: Path) -> None:
     assert (first_home / "sessions" / "shared-session.jsonl").exists()
     assert (second_home / "sessions" / "shared-session.jsonl").exists()
     assert (shared_home / "sessions" / "shared-session.jsonl").read_text(encoding="utf-8") == "session"
+
+
+def test_codex_detects_persisted_tool_calls_without_outputs(tmp_path: Path) -> None:
+    module = _load_plugin_module("codex-agent", "pkg/native_cli.py", "native_cli_session_validation")
+    shared_home = tmp_path / "shared-codex"
+    sessions = shared_home / "sessions" / "2026" / "07" / "21"
+    sessions.mkdir(parents=True)
+    session_id = "thread-123"
+    rollout = sessions / f"rollout-2026-07-21T20-00-00-{session_id}.jsonl"
+    records = [
+        {"payload": {"type": "custom_tool_call", "call_id": "call-complete"}},
+        {"payload": {"type": "custom_tool_call_output", "call_id": "call-complete"}},
+        {"payload": {"type": "function_call", "call_id": "call-pending"}},
+    ]
+    rollout.write_text(
+        "\n".join(json.dumps(record) for record in records),
+        encoding="utf-8",
+    )
+
+    assert module._pending_session_tool_calls(shared_home, session_id) == {"call-pending"}
+
+
+def test_codex_app_server_accepts_json_lines_larger_than_asyncio_default(tmp_path: Path) -> None:
+    module = _load_plugin_module("codex-agent", "pkg/native_cli.py", "native_cli_large_line")
+    fake_cli = tmp_path / "fake_codex_large_line.py"
+    fake_cli.write_text(
+        "\n".join(
+            [
+                "import json",
+                "import sys",
+                "thread_id = 'thread-large-line'",
+                "def send(payload):",
+                "    print(json.dumps(payload), flush=True)",
+                "for line in sys.stdin:",
+                "    request = json.loads(line)",
+                "    method = request.get('method')",
+                "    request_id = request.get('id')",
+                "    if request_id is not None and method == 'initialize':",
+                "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {}})",
+                "    elif request_id is not None and method == 'thread/start':",
+                "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'threadId': thread_id}})",
+                "    elif request_id is not None and method == 'turn/start':",
+                "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {}})",
+                "        send({'jsonrpc': '2.0', 'method': 'turn/started', 'params': {'threadId': thread_id}})",
+                "        text = 'x' * 70000",
+                "        send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'large', 'type': 'agentMessage', 'text': text, 'phase': 'final_answer'}}})",
+                "        send({'jsonrpc': '2.0', 'method': 'turn/completed', 'params': {'threadId': thread_id, 'turn': {'status': 'completed'}}})",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    async def collect():
+        return [
+            event
+            async for event in module._run_cli_process_events(
+                sys.executable,
+                [str(fake_cli), "app-server", "--listen", "stdio://"],
+                cwd=str(tmp_path),
+                env=dict(os.environ),
+                timeout=10,
+                streaming=True,
+                resume_session_id="",
+                prompt="hello",
+                agent_cwd=str(tmp_path),
+            )
+        ]
+
+    events = asyncio.run(collect())
+
+    delta = next(event for event in events if event["type"] == "message.delta")
+    assert len(delta["data"]["chunk"]["content"]) == 70000
+    assert events[-1]["type"] == "run.completed"
 
 
 def test_codex_remote_mcp_config_is_not_embedded_in_ssh_command() -> None:

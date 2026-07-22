@@ -97,7 +97,7 @@ spec:
         zh_Hans: 超时秒数
       type: integer
       required: false
-      default: 300
+      default: 1800
     - name: streaming
       label:
         en_US: Streaming

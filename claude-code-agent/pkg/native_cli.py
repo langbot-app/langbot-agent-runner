@@ -88,7 +88,11 @@ def _parse_args(value: typing.Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if str(item)]
     text = str(value).strip()
-    return shlex.split(text) if text else []
+    if not text:
+        return []
+    if os.name != "nt":
+        return shlex.split(text)
+    return [part[1:-1] if len(part) >= 2 and part[0] == part[-1] == '"' else part for part in shlex.split(text, posix=False)]
 
 
 def _parse_json_object(value: typing.Any, *, label: str) -> dict[str, typing.Any]:
@@ -157,7 +161,10 @@ def _mcp_config_json(servers: list[AgentMCPServerConfig], extra_servers: list[ty
 def _write_temp_mcp_config(mcp_config: str, *, directory: str | None = None) -> str:
     fd, path = tempfile.mkstemp(prefix="langbot-claude-mcp-", suffix=".json", dir=directory)
     try:
-        os.fchmod(fd, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        else:
+            os.chmod(path, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             fd = -1
             handle.write(mcp_config)
@@ -618,8 +625,9 @@ async def _run_cli_process_events(
         if not final_text:
             raise NativeCliError("Claude Code returned no assistant text", code="claude_code.empty_response")
         final_message = {"role": "assistant", "content": final_text}
-        yield {"type": "message.completed", "data": {"message": final_message}}
-        yield {"type": "run.completed", "data": {"finish_reason": "stop", "message": final_message}}
+        if not streaming:
+            yield {"type": "message.completed", "data": {"message": final_message}}
+        yield {"type": "run.completed", "data": {"finish_reason": "stop"}}
     finally:
         if not stderr_task.done():
             stderr_task.cancel()

@@ -31,6 +31,8 @@ from pkg.steering import run_with_steering
 
 SESSION_STATE_KEY = "external.codex_session_id"
 SUPPORTED_LOCATIONS = {"local", "remote-ssh", "daemon"}
+DEFAULT_TIMEOUT_SECONDS = 1800.0
+CODEX_STDIO_LIMIT_BYTES = 16 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
 
@@ -90,7 +92,11 @@ def _parse_args(value: typing.Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if str(item)]
     text = str(value).strip()
-    return shlex.split(text) if text else []
+    if not text:
+        return []
+    if os.name != "nt":
+        return shlex.split(text)
+    return [part[1:-1] if len(part) >= 2 and part[0] == part[-1] == '"' else part for part in shlex.split(text, posix=False)]
 
 
 def _parse_json_object(value: typing.Any, *, label: str) -> dict[str, typing.Any]:
@@ -222,6 +228,40 @@ def _shared_codex_home(env: dict[str, str]) -> Path:
     if configured:
         return Path(configured).expanduser()
     return Path.home() / ".codex"
+
+
+def _pending_session_tool_calls(shared_home: Path, session_id: str) -> set[str]:
+    """Return tool call ids that have no matching output in a persisted session."""
+    sessions_dir = shared_home / "sessions"
+    if not session_id or not sessions_dir.is_dir():
+        return set()
+
+    call_ids: set[str] = set()
+    output_ids: set[str] = set()
+    try:
+        rollout_paths = sessions_dir.rglob(f"rollout-*-{session_id}.jsonl")
+        for rollout_path in rollout_paths:
+            with rollout_path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    payload = record.get("payload")
+                    if not isinstance(payload, dict):
+                        continue
+                    item_type = str(payload.get("type") or "")
+                    call_id = str(payload.get("call_id") or "").strip()
+                    if not call_id:
+                        continue
+                    if item_type in {"custom_tool_call", "function_call"}:
+                        call_ids.add(call_id)
+                    elif item_type in {"custom_tool_call_output", "function_call_output"}:
+                        output_ids.add(call_id)
+    except OSError as exc:
+        logger.warning("Could not inspect Codex session %s: %s", session_id, exc)
+        return set()
+    return call_ids - output_ids
 
 
 def _symlink_or_copy_file(src: Path, dst: Path) -> None:
@@ -359,7 +399,7 @@ class NativeCodexRunner(AgentRunner):
             "ssh_port": _to_int(data.get("ssh-port"), 22),
             "daemon_id": daemon_id,
             "daemon_connect_timeout": _to_float(data.get("daemon-connect-timeout"), 30.0),
-            "timeout": _to_float(data.get("timeout"), 300.0),
+            "timeout": _to_float(data.get("timeout"), DEFAULT_TIMEOUT_SECONDS),
             "streaming": _to_bool(data.get("streaming"), True),
             "reuse_session": _to_bool(data.get("reuse-session"), True),
             "langbot_assets_enabled": _to_bool(data.get("langbot-assets-enabled"), True),
@@ -377,7 +417,19 @@ class NativeCodexRunner(AgentRunner):
 
     def _resume_session_id(self, ctx: AgentRunContext, config: dict[str, typing.Any]) -> str:
         stored = self._stored_session_id(ctx)
-        if stored and config["reuse_session"]:
+        if not stored or not config["reuse_session"]:
+            return ""
+        if config["location"] == "local":
+            env = {**os.environ, **config["env"]}
+            pending_calls = _pending_session_tool_calls(_shared_codex_home(env), stored)
+            if pending_calls:
+                logger.warning(
+                    "Starting a new Codex session because %s has %d tool call(s) without output",
+                    stored,
+                    len(pending_calls),
+                )
+                return ""
+        if stored:
             return stored
         return ""
 
@@ -531,7 +583,10 @@ class NativeCodexDaemon(AgentRuntimeDaemonClient):
         try:
             mcp_servers: list[AgentMCPServerConfig] = []
             if config.get("langbot_assets_enabled", True):
-                proxy = self.create_mcp_proxy(job_id, request_timeout=float(config.get("timeout") or 300.0))
+                proxy = self.create_mcp_proxy(
+                    job_id,
+                    request_timeout=float(config.get("timeout") or DEFAULT_TIMEOUT_SECONDS),
+                )
                 proxy.start()
                 mcp_servers.append(proxy.mcp_server())
             mcp_toml = _mcp_config_toml(_mcp_servers_config(mcp_servers, list(config.get("mcp_servers") or [])))
@@ -550,7 +605,7 @@ class NativeCodexDaemon(AgentRuntimeDaemonClient):
                     argv[1:],
                     cwd=cwd,
                     env=env,
-                    timeout=float(config.get("timeout") or 300.0),
+                    timeout=float(config.get("timeout") or DEFAULT_TIMEOUT_SECONDS),
                     streaming=bool(config.get("streaming", True)),
                     resume_session_id=session_id,
                     prompt=str(payload.get("prompt") or ""),
@@ -941,6 +996,7 @@ async def _run_cli_process_events(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=CODEX_STDIO_LIMIT_BYTES,
         )
     except FileNotFoundError as exc:
         raise NativeCliError(f"Codex command not found: {command}", code="codex.command_not_found") from exc
@@ -1002,13 +1058,25 @@ async def _run_cli_process_events(
                 }
         result_sequence += 1
         final_message = {"role": "assistant", "content": final_text}
-        yield {
-            "type": "message.completed",
-            "sequence": result_sequence,
-            "data": {"message": final_message},
-        }
-        result_sequence += 1
-        yield {"type": "run.completed", "sequence": result_sequence, "data": {"finish_reason": "stop", "message": final_message}}
+        if not streaming:
+            yield {
+                "type": "message.completed",
+                "sequence": result_sequence,
+                "data": {"message": final_message},
+            }
+            result_sequence += 1
+        yield {"type": "run.completed", "sequence": result_sequence, "data": {"finish_reason": "stop"}}
+    except NativeCliError as exc:
+        await process.wait()
+        stderr = _redact_secrets((await stderr_task).decode("utf-8", errors="replace").strip())
+        if exc.code == "codex.process_exited":
+            detail = stderr or f"exit status {process.returncode}"
+            raise NativeCliError(
+                f"{exc.message}: {detail}",
+                code=exc.code,
+                retryable=True,
+            ) from exc
+        raise
     except TimeoutError as exc:
         process.kill()
         raise NativeCliError("Codex app-server run timed out", code="codex.timeout", retryable=True) from exc

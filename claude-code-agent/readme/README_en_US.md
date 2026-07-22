@@ -55,3 +55,20 @@ Run Claude Code CLI as a LangBot AgentRunner.
 - The runner can use only LangBot resources authorized for the current run.
 - Availability, model abilities, and rate limits depend on the external service.
 - See the full Chinese README at the package root for advanced behavior and product-specific limitations.
+
+- Follow-ups are injected between turns, not mid-token.
+- Follow-up turns currently carry text only; attachments on follow-ups are not
+  yet forwarded.
+- Steering only applies when the run has a conversation scope; otherwise the
+  runner transparently falls back to single-turn execution.
+
+## Structured Interaction Status
+
+The SDK and LangBot Host expose provider-neutral `interaction.requested` and
+`interaction.submitted` events, but this runner does not declare that
+capability yet. Its current `claude -p` transport closes stdin after the prompt,
+while Claude permission requests require a response tied to the live process.
+The runner must first gain a durable bidirectional daemon or a verified
+checkpoint/resume mapping for one-time permission decisions. Enabling the
+manifest flag alone would advertise confirmations that cannot be resumed
+safely.

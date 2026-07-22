@@ -30,6 +30,31 @@ Configuration is **static** and should not contain runtime state. Only the follo
 
 - `streaming`: yes
 - `multimodal_input`: yes
+- `interactions`: yes
+
+## Workflow Human Input
+
+When Dify emits `workflow_paused` with a `human_input_required` reason, the
+runner asks LangBot to deliver a structured interaction. A validated
+`interaction.submitted` event resumes Dify through
+`/form/human_input/{form_token}` and `/workflow/{workflow_run_id}/events`.
+Workflows that pause again produce a new interaction and can be resumed again.
+Forms are emitted as atomic steps: the runner collects one field at a time and
+then emits the action buttons. This matches LangBot delivery adapters that
+support a single select or an action-only confirmation.
+
+Provider continuation data is not included in the interaction payload. The
+runner stores `form_token`, `workflow_run_id`, the Dify user tag, and field/action
+mappings in authorized plugin storage under a random LangBot `interaction_id`.
+The continuation is deleted after a successful terminal event or after it is
+replaced by a later pause.
+
+The selected AgentRunner binding must allow interactions, and the delivery
+adapter must support the requested field/action shape. Adapters with a smaller
+interaction subset deliver the request's plain-text fallback instead.
+The current official adapters expose buttons and single-select callbacks;
+free-text and file form fields therefore require a future adapter capability
+before they can be resumed from those surfaces.
 
 ## Runtime State
 

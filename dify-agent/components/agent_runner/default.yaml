@@ -144,6 +144,7 @@ spec:
     knowledge_retrieval: true
     multimodal_input: true
     interrupt: false
+    interactions: true
   permissions:
     tools:
       - detail
@@ -154,6 +155,8 @@ spec:
       - page
     storage:
       - plugin
+    interactions:
+      - request
 execution:
   python:
     path: default.py

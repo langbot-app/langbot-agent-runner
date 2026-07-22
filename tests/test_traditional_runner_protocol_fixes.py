@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import sys
 import types
 from collections.abc import AsyncGenerator
@@ -19,6 +20,7 @@ from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentTrigger,
     ConversationContext,
     DeliveryContext,
+    InteractionSubmission,
 )
 from langbot_plugin.api.entities.builtin.provider.message import ContentElement
 
@@ -73,16 +75,18 @@ def _ctx(
     text: str = "hello",
     contents: list[ContentElement] | None = None,
     conversation_state: dict[str, Any] | None = None,
+    event_type: str = "message.received",
+    interaction: InteractionSubmission | None = None,
 ) -> AgentRunContext:
     return AgentRunContext(
         run_id="run_traditional",
-        trigger=AgentTrigger(type="message.received"),
-        event=AgentEventContext(event_id="evt_1", event_type="message.received", source="test"),
+        trigger=AgentTrigger(type=event_type),
+        event=AgentEventContext(event_id="evt_1", event_type=event_type, source="test"),
         conversation=ConversationContext(
             conversation_id="langbot-conv-1",
             session_id="langbot-session-1",
         ),
-        input=AgentInput(text=text, contents=contents or []),
+        input=AgentInput(text=text, contents=contents or [], interaction=interaction),
         delivery=DeliveryContext(surface="test", supports_streaming=True),
         resources=AgentResources(),
         state=AgentRunState(conversation=conversation_state or {}),
@@ -182,6 +186,366 @@ def test_dify_workflow_uses_runner_owned_state_ids() -> None:
         (_type(item), item.data.get("key")) for item in results
     }
     assert _type(results[-1]) == "run.completed"
+
+
+class _FakePluginStorage:
+    def __init__(self) -> None:
+        self.values: dict[str, bytes] = {}
+        self.deleted: list[str] = []
+
+    async def set_plugin_storage(self, key: str, value: bytes) -> None:
+        self.values[key] = value
+
+    async def get_plugin_storage(self, key: str) -> bytes:
+        return self.values[key]
+
+    async def delete_plugin_storage(self, key: str) -> None:
+        self.deleted.append(key)
+        self.values.pop(key, None)
+
+
+def test_dify_workflow_pause_requests_host_interaction_and_hides_provider_tokens() -> None:
+    module = _load_runner_module("dify-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    storage = _FakePluginStorage()
+    runner.get_run_api = lambda ctx: storage
+
+    class FakeClient:
+        async def workflow_run(self, *, inputs, user, files):
+            yield {"event": "workflow_started", "data": {"workflow_run_id": "workflow-private"}}
+            yield {
+                "event": "node_started",
+                "data": {
+                    "node_id": "human-input-node",
+                    "node_type": "human-input",
+                    "title": "Manual review",
+                },
+            }
+            yield {
+                "event": "workflow_paused",
+                "data": {
+                    "reasons": [
+                        {
+                            "TYPE": "human_input_required",
+                            "form_token": "form-private",
+                            "node_title": "Manual review",
+                            "form_content": "Choose a priority\n{{#$output.priority#}}",
+                            "inputs": [
+                                {
+                                    "output_variable_name": "priority",
+                                    "type": "select",
+                                    "option_source": {"type": "constant", "value": ["high", "low"]},
+                                }
+                            ],
+                            "actions": [{"id": "approve-private", "title": "Approve"}],
+                        }
+                    ],
+                },
+            }
+
+    results = asyncio.run(
+        _collect_async(runner._run_workflow(_ctx(), FakeClient(), {}, "hello", "user_1", [], False))
+    )
+
+    interaction_result = results[-1]
+    assert _type(results[0]) == "tool.call.started"
+    assert results[0].data["tool_name"] == "Manual review"
+    assert all(_type(result) != "message.delta" for result in results)
+    assert _type(interaction_result) == "action.requested"
+    assert interaction_result.data["action"] == "interaction.requested"
+    request = interaction_result.data["payload"]
+    assert request["fields"][0]["options"][0]["value"] == "high"
+    assert request["actions"] == []
+    assert "form-private" not in str(request)
+    assert "workflow-private" not in str(request)
+    assert len(storage.values) == 1
+    continuation = json.loads(next(iter(storage.values.values())))
+    assert continuation["form_token"] == "form-private"
+    assert continuation["workflow_run_id"] == "workflow-private"
+    assert continuation["interaction_actions"][0]["label"] == "Approve"
+    assert all(_type(result) != "run.completed" for result in results)
+
+
+def test_dify_interaction_resume_submits_mapped_values_and_clears_continuation() -> None:
+    module = _load_runner_module("dify-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    storage = _FakePluginStorage()
+    runner.get_run_api = lambda ctx: storage
+    interaction_id = "dify-test"
+    storage_key = module._interaction_storage_key(interaction_id)
+    storage.values[storage_key] = json.dumps(
+        {
+            "version": 1,
+            "interaction_id": interaction_id,
+            "form_token": "form-private",
+            "workflow_run_id": "workflow-private",
+            "user": "user_1",
+            "field_map": {"field_1": "priority"},
+            "action_map": {"action_1": "approve-private"},
+            "default_inputs": {"comment": "default"},
+        }
+    ).encode()
+    captured: dict[str, Any] = {}
+
+    class FakeClient:
+        async def workflow_submit(self, **kwargs):
+            captured.update(kwargs)
+            yield {
+                "event": "workflow_finished",
+                "data": {"error": None, "outputs": {"summary": "Approved"}},
+            }
+
+    submission = InteractionSubmission(
+        interaction_id=interaction_id,
+        action_id="action_1",
+        values={"field_1": "high"},
+    )
+    results = asyncio.run(
+        _collect_async(runner._resume_workflow(_ctx(), FakeClient(), submission, False))
+    )
+
+    assert captured == {
+        "form_token": "form-private",
+        "workflow_run_id": "workflow-private",
+        "inputs": {"comment": "default", "priority": "high"},
+        "user": "user_1",
+        "action": "approve-private",
+    }
+    assert [_type(result) for result in results] == ["message.delta", "run.completed"]
+    assert storage_key in storage.deleted
+    assert storage_key not in storage.values
+
+
+def test_dify_field_submission_advances_to_action_without_calling_provider() -> None:
+    module = _load_runner_module("dify-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    storage = _FakePluginStorage()
+    runner.get_run_api = lambda ctx: storage
+    interaction_id = "dify-field"
+    storage.values[module._interaction_storage_key(interaction_id)] = json.dumps(
+        {
+            "version": 1,
+            "interaction_id": interaction_id,
+            "form_token": "form-private",
+            "workflow_run_id": "workflow-private",
+            "user": "user_1",
+            "field_map": {"field_1": "priority"},
+            "action_map": {"action_1": "approve-private"},
+            "default_inputs": {},
+            "title": "Manual review",
+            "description": "Review it",
+            "fallback_text": "Review it",
+            "phase": "field",
+            "current_fields": [
+                {
+                    "id": "field_1",
+                    "label": "Priority",
+                    "type": "select",
+                    "required": True,
+                    "options": [{"value": "high", "label": "High"}],
+                }
+            ],
+            "remaining_fields": [],
+            "interaction_actions": [{"id": "action_1", "label": "Approve", "style": "primary"}],
+        }
+    ).encode()
+
+    class ProviderMustNotRun:
+        def workflow_submit(self, **kwargs):
+            raise AssertionError("provider must not resume before the action step")
+
+    submission = InteractionSubmission(interaction_id=interaction_id, values={"field_1": "high"})
+    results = asyncio.run(
+        _collect_async(runner._resume_workflow(_ctx(), ProviderMustNotRun(), submission, False))
+    )
+
+    assert [_type(result) for result in results] == ["action.requested"]
+    request = results[0].data["payload"]
+    assert request["fields"] == []
+    assert request["actions"][0]["label"] == "Approve"
+    continuation = json.loads(storage.values[module._interaction_storage_key(request["interaction_id"])])
+    assert continuation["default_inputs"] == {"priority": "high"}
+
+
+def test_dify_form_content_is_revealed_with_its_current_field() -> None:
+    module = _load_runner_module("dify-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    storage = _FakePluginStorage()
+    runner.get_run_api = lambda ctx: storage
+    request, continuation = runner._build_interaction_request(
+        {
+            "form_token": "form-private",
+            "node_title": "人工介入",
+            "form_content": (
+                "1\n请输入你的问题\n{{#$output.us_input#}}\n\n"
+                "请选择你的答案\n{{#$output.xiala#}}"
+            ),
+            "inputs": [
+                {"output_variable_name": "us_input", "type": "paragraph", "required": True},
+                {
+                    "output_variable_name": "xiala",
+                    "type": "select",
+                    "required": True,
+                    "option_source": {"type": "constant", "value": ["1", "2"]},
+                },
+            ],
+            "actions": [{"id": "or-private", "title": "or"}],
+        },
+        "workflow-private",
+        "user-1",
+    )
+
+    assert request.description == "1\n请输入你的问题"
+    assert request.fields[0].label == "us_input"
+    assert "请选择你的答案" not in request.description
+
+    asyncio.run(runner._store_interaction_continuation(_ctx(), continuation))
+    second_result = asyncio.run(
+        runner._advance_field_interaction(
+            _ctx(),
+            continuation,
+            InteractionSubmission(interaction_id=request.interaction_id, values={"field_1": "问题内容"}),
+        )
+    )
+    second_request = second_result.data["payload"]
+    assert second_request["description"] == "请选择你的答案"
+    assert second_request["fields"][0]["label"] == "xiala"
+    assert "请输入你的问题" not in second_request["description"]
+
+    second_continuation = json.loads(
+        storage.values[module._interaction_storage_key(second_request["interaction_id"])]
+    )
+    final_result = asyncio.run(
+        runner._advance_field_interaction(
+            _ctx(),
+            second_continuation,
+            InteractionSubmission(
+                interaction_id=second_request["interaction_id"],
+                values={"field_2": "1"},
+            ),
+        )
+    )
+    final_request = final_result.data["payload"]
+    assert final_request["description"] is None
+    assert final_request["fields"] == []
+    assert final_request["actions"][0]["label"] == "or"
+
+
+def test_dify_interaction_resume_can_pause_again() -> None:
+    module = _load_runner_module("dify-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    storage = _FakePluginStorage()
+    runner.get_run_api = lambda ctx: storage
+    interaction_id = "dify-first"
+    old_key = module._interaction_storage_key(interaction_id)
+    storage.values[old_key] = json.dumps(
+        {
+            "version": 1,
+            "interaction_id": interaction_id,
+            "form_token": "form-1",
+            "workflow_run_id": "workflow-1",
+            "user": "user_1",
+            "field_map": {},
+            "action_map": {"continue": ""},
+            "default_inputs": {},
+        }
+    ).encode()
+
+    class FakeClient:
+        async def workflow_submit(self, **kwargs):
+            yield {
+                "event": "workflow_paused",
+                "data": {
+                    "workflow_run_id": "workflow-2",
+                    "reasons": [
+                        {
+                            "TYPE": "human_input_required",
+                            "form_token": "form-2",
+                            "node_title": "Second review",
+                            "inputs": [],
+                            "actions": [{"id": "done", "title": "Done"}],
+                        }
+                    ],
+                },
+            }
+
+    submission = InteractionSubmission(interaction_id=interaction_id, action_id="continue")
+    results = asyncio.run(
+        _collect_async(runner._resume_workflow(_ctx(), FakeClient(), submission, False))
+    )
+
+    assert [_type(result) for result in results] == ["action.requested"]
+    new_interaction_id = results[0].data["payload"]["interaction_id"]
+    assert new_interaction_id != interaction_id
+    assert old_key in storage.deleted
+    assert module._interaction_storage_key(new_interaction_id) in storage.values
+
+
+def test_dify_client_submits_form_then_streams_resumed_events(monkeypatch) -> None:
+    module = _load_runner_module("dify-agent")
+    client_module = sys.modules["pkg.dify_client"]
+    calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    class FakeResponse:
+        is_success = True
+        status_code = 200
+        text = ""
+
+        async def aread(self):
+            return b""
+
+        async def aiter_lines(self):
+            yield ""
+            yield 'data: {"event":"workflow_finished","data":{"outputs":{"summary":"done"}}}'
+
+    class FakeStream:
+        async def __aenter__(self):
+            return FakeResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            calls.append(("init", "", kwargs))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, path, **kwargs):
+            calls.append(("post", path, kwargs))
+            return FakeResponse()
+
+        def stream(self, method, path, **kwargs):
+            calls.append((method.lower(), path, kwargs))
+            return FakeStream()
+
+    monkeypatch.setattr(client_module.httpx, "AsyncClient", FakeAsyncClient)
+    client = module.AsyncDifyClient(api_key="key", base_url="https://dify.example/v1")
+    events = asyncio.run(
+        _collect_async(
+            client.workflow_submit(
+                form_token="form-token",
+                workflow_run_id="workflow-run",
+                inputs={"priority": "high"},
+                user="user-1",
+                action="approve",
+            )
+        )
+    )
+
+    assert events[0]["event"] == "workflow_finished"
+    assert calls[1][0:2] == ("post", "/form/human_input/form-token")
+    assert calls[1][2]["json"] == {
+        "inputs": {"priority": "high"},
+        "user": "user-1",
+        "action": "approve",
+    }
+    assert calls[2][0:2] == ("get", "/workflow/workflow-run/events")
+    assert calls[2][2]["params"] == {"user": "user-1"}
 
 
 def test_dify_text_image_upload_failure_is_input_error() -> None:

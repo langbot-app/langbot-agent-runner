@@ -189,6 +189,68 @@ class AsyncDifyClient:
                     code="dify.http_error",
                 ) from None
 
+    async def workflow_submit(
+        self,
+        form_token: str,
+        workflow_run_id: str,
+        inputs: dict[str, typing.Any],
+        user: str,
+        action: str = "",
+    ) -> typing.AsyncGenerator[dict[str, typing.Any], None]:
+        """Submit human input and stream the resumed workflow events."""
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self.timeout,
+                trust_env=True,
+            ) as client:
+                response = await client.post(
+                    f"/form/human_input/{form_token}",
+                    headers=headers,
+                    json={"inputs": inputs, "user": user, "action": action},
+                )
+                if not response.is_success:
+                    raise DifyAPIError(
+                        f"Dify API error: {response.status_code} - {response.text[:200]}",
+                        code="dify.http_error",
+                    )
+
+                async with client.stream(
+                    "GET",
+                    f"/workflow/{workflow_run_id}/events",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    params={"user": user},
+                ) as event_response:
+                    if not event_response.is_success:
+                        body = await event_response.aread()
+                        raise DifyAPIError(
+                            f"Dify API error: {event_response.status_code} - "
+                            f"{body.decode('utf-8', errors='replace')[:200]}",
+                            code="dify.http_error",
+                        )
+                    async for line in event_response.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data_str = line[5:].strip()
+                        if not data_str:
+                            continue
+                        try:
+                            yield json.loads(data_str)
+                        except json.JSONDecodeError:
+                            raise DifyAPIError(
+                                f"Invalid Dify response format: {data_str[:100]}",
+                                code="dify.response_invalid",
+                            ) from None
+        except httpx.TimeoutException:
+            raise DifyAPIError(
+                f"Dify API request timed out after {self.timeout}s",
+                code="dify.timeout",
+            ) from None
+
     async def upload_file(
         self,
         file_name: str,
