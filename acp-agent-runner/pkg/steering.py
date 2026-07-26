@@ -118,6 +118,11 @@ async def run_with_steering(
                 # A failed turn ends the run immediately; do not drain steering.
                 yield result
                 return
+            if result_type == AgentRunResultType.ACTION_REQUESTED.value:
+                # An action pauses or hands control back to the Host. Do not
+                # pull steering or synthesize a terminal completion event.
+                yield result
+                return
             if result_type == AgentRunResultType.RUN_COMPLETED.value:
                 # Hold back: only the final turn's completion terminates the run.
                 terminal = result

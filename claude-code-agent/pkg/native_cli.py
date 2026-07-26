@@ -14,21 +14,32 @@ import time
 import typing
 import uuid
 
+import pydantic
 from langbot_plugin.api.agent_tools.daemon import (
     AgentRuntimeDaemonClient,
     AgentRuntimeDaemonError,
     agent_runtime_daemon_config_from_plugin_config,
     get_agent_runtime_daemon_hub,
 )
+from langbot_plugin.api.agent_tools.decorators import agent_tool
 from langbot_plugin.api.agent_tools.external_tools import AgentRunExternalTools
 from langbot_plugin.api.agent_tools.mcp_access import AgentRunMCPAccess
 from langbot_plugin.api.agent_tools.mcp_config import AgentMCPServerConfig
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
-from langbot_plugin.api.entities.builtin.agent_runner import AgentRunContext, AgentRunResult
+from langbot_plugin.api.entities.builtin.agent_runner import (
+    AgentRunContext,
+    AgentRunResult,
+    InteractionAction,
+    InteractionField,
+    InteractionOption,
+    InteractionRequest,
+    InteractionSubmission,
+)
 
 from pkg.steering import run_with_steering
 
 SESSION_STATE_KEY = "external.claude_code_session_id"
+PENDING_INTERACTION_STATE_KEY = "external.claude_code_pending_interaction"
 SUPPORTED_LOCATIONS = {"local", "remote-ssh", "daemon"}
 
 
@@ -249,6 +260,185 @@ def _input_text(ctx: AgentRunContext) -> str:
     return ctx.input.to_text().strip()
 
 
+def _claude_question_tool_use(event: dict[str, typing.Any]) -> tuple[str, dict[str, typing.Any]] | None:
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if not isinstance(content, list):
+        return None
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        tool_name = str(block.get("name") or "")
+        recognized_name = tool_name in {"AskUserQuestion", "ask_user_question"} or tool_name.endswith(
+            "__ask_user_question"
+        )
+        if block.get("type") != "tool_use" or not recognized_name:
+            continue
+        tool_use_id = str(block.get("id") or "").strip()
+        tool_input = block.get("input")
+        if tool_use_id and isinstance(tool_input, dict):
+            return tool_use_id, tool_input
+    return None
+
+
+def _interaction_from_claude_tool(
+    tool_use_id: str,
+    tool_input: dict[str, typing.Any],
+) -> tuple[InteractionRequest, dict[str, typing.Any]]:
+    raw_questions = tool_input.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
+        raise NativeCliError("AskUserQuestion requires at least one question", code="claude_code.interaction_invalid")
+
+    fields: list[InteractionField] = []
+    continuation_questions: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for index, raw_question in enumerate(raw_questions[:20], start=1):
+        question = raw_question if isinstance(raw_question, dict) else {}
+        field_id = str(question.get("id") or f"question_{index}").strip()[:128]
+        if not field_id or field_id in seen_ids:
+            field_id = f"question_{index}"
+        seen_ids.add(field_id)
+        label = str(question.get("question") or question.get("header") or f"Question {index}").strip()[:512]
+        options: list[InteractionOption] = []
+        raw_options = question.get("options")
+        if isinstance(raw_options, list):
+            for option_index, raw_option in enumerate(raw_options[:100], start=1):
+                option = raw_option if isinstance(raw_option, dict) else {"label": raw_option}
+                option_label = str(option.get("label") or f"Option {option_index}").strip()
+                if not option_label:
+                    continue
+                options.append(
+                    InteractionOption(
+                        value=option_label[:512],
+                        label=option_label[:512],
+                        description=(str(option["description"])[:2000] if option.get("description") else None),
+                    )
+                )
+        multiple = bool(question.get("multiSelect") or question.get("multiple"))
+        field_type = "multiselect" if options and multiple else "select" if options else "text"
+        fields.append(
+            InteractionField(
+                id=field_id,
+                label=label,
+                type=field_type,
+                required=True,
+                options=options,
+            )
+        )
+        continuation_questions.append({"id": field_id, "question": label})
+
+    title = str(tool_input.get("title") or "User input required").strip()[:1000]
+    interaction_id = f"claude-{tool_use_id}"[:255]
+    request = InteractionRequest(
+        interaction_id=interaction_id,
+        kind="form",
+        title=title,
+        description=(str(tool_input.get("description") or "").strip()[:10000] or None),
+        fields=fields,
+        actions=[InteractionAction(id="submit", label="Submit", style="primary")],
+        fallback_text=f"{title}: " + "; ".join(field.label for field in fields),
+    )
+    continuation = {
+        "version": 1,
+        "interaction_id": interaction_id,
+        "tool_use_id": tool_use_id,
+        "questions": continuation_questions,
+    }
+    return request, continuation
+
+
+def _pending_interaction(ctx: AgentRunContext) -> dict[str, typing.Any] | None:
+    value = ctx.state.conversation.get(PENDING_INTERACTION_STATE_KEY)
+    return dict(value) if isinstance(value, dict) else None
+
+
+def _submission_payload(
+    submission: InteractionSubmission,
+    continuation: dict[str, typing.Any],
+) -> dict[str, typing.Any]:
+    if submission.interaction_id != continuation.get("interaction_id"):
+        raise NativeCliError(
+            "interaction submission does not match the pending Claude request",
+            code="claude_code.interaction_mismatch",
+        )
+    question_by_id = {
+        str(item.get("id")): str(item.get("question") or item.get("id"))
+        for item in continuation.get("questions", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    return {
+        "action": submission.action_id,
+        "answers": [
+            {"id": field_id, "question": question_by_id.get(field_id, field_id), "answer": value}
+            for field_id, value in submission.values.items()
+        ],
+    }
+
+
+def _interaction_resume_prompt(payload: dict[str, typing.Any]) -> str:
+    return (
+        "The user answered the previously paused ask_user_question call. "
+        "Treat these values as the authoritative response and continue the interrupted task.\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
+
+
+class ClaudeQuestionOption(pydantic.BaseModel):
+    label: str = pydantic.Field(min_length=1, max_length=512)
+    description: str | None = pydantic.Field(default=None, max_length=2000)
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+
+class ClaudeQuestion(pydantic.BaseModel):
+    id: str | None = pydantic.Field(default=None, max_length=128)
+    question: str = pydantic.Field(min_length=1, max_length=512)
+    header: str | None = pydantic.Field(default=None, max_length=512)
+    options: list[ClaudeQuestionOption] = pydantic.Field(default_factory=list, max_length=100)
+    multi_select: bool = pydantic.Field(default=False, alias="multiSelect")
+
+    model_config = pydantic.ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class AskUserQuestionArgs(pydantic.BaseModel):
+    title: str | None = pydantic.Field(default=None, max_length=1000)
+    description: str | None = pydantic.Field(default=None, max_length=10000)
+    questions: list[ClaudeQuestion] = pydantic.Field(min_length=1, max_length=20)
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+
+class ClaudeCodeExternalTools(AgentRunExternalTools):
+    def __init__(
+        self,
+        api: typing.Any,
+        ctx: AgentRunContext,
+        *,
+        include_assets: bool,
+    ) -> None:
+        self.include_assets = include_assets
+        super().__init__(api, ctx)
+
+    def _available_tool_names(self) -> set[str]:
+        names = super()._available_tool_names() if self.include_assets else set()
+        names.add("ask_user_question")
+        return names
+
+    @agent_tool(
+        name="ask_user_question",
+        description=(
+            "Ask the user one or more questions through the LangBot conversation surface. "
+            "Use this when work cannot continue without a user choice, confirmation, or value. "
+            "The current run pauses until LangBot receives the user's response."
+        ),
+        args_model=AskUserQuestionArgs,
+    )
+    async def ask_user_question(self, args: AskUserQuestionArgs) -> dict[str, typing.Any]:
+        return {"status": "paused", "question_count": len(args.questions)}
+
+
 class NativeClaudeCodeRunner(AgentRunner):
     def _validate_config(self, ctx: AgentRunContext) -> dict[str, typing.Any]:
         data = ctx.config or {}
@@ -294,8 +484,16 @@ class NativeClaudeCodeRunner(AgentRunner):
             return stored, False
         return str(uuid.uuid4()), True
 
-    def _argv(self, config: dict[str, typing.Any], *, session_id: str, mcp_config_path: str, resume: bool) -> list[str]:
+    def _argv(
+        self,
+        config: dict[str, typing.Any],
+        *,
+        session_id: str,
+        mcp_config_path: str,
+        resume: bool,
+    ) -> list[str]:
         argv = [*_parse_args(config["command"]), *config["args"], "-p", "--verbose", "--output-format", "stream-json"]
+        argv.extend(["--allowedTools", "mcp__langbot_agent__ask_user_question"])
         if mcp_config_path:
             argv.extend(["--strict-mcp-config", "--mcp-config", mcp_config_path])
         if session_id:
@@ -304,27 +502,58 @@ class NativeClaudeCodeRunner(AgentRunner):
             argv.extend(["--resume", session_id] if resume else ["--session-id", session_id])
         return argv
 
-    def _mcp_access(self, ctx: AgentRunContext, config: dict[str, typing.Any]) -> AgentRunMCPAccess | None:
-        if not config["langbot_assets_enabled"]:
-            return None
+    def _mcp_access(
+        self,
+        ctx: AgentRunContext,
+        config: dict[str, typing.Any],
+    ) -> tuple[AgentRunMCPAccess, ClaudeCodeExternalTools]:
+        run_api = self.get_run_api(ctx)
+        tools = ClaudeCodeExternalTools(
+            run_api,
+            ctx,
+            include_assets=config["langbot_assets_enabled"],
+        )
         access = AgentRunMCPAccess(
-            self.get_run_api(ctx),
+            run_api,
             ctx,
             enabled=True,
             location=config["location"],
             mode="ephemeral",
             transport=config["mcp_bridge_transport"],
             bridge_request_timeout=config["timeout"],
+            tools=tools,
         )
         access.start()
-        return access
+        return access, tools
 
     async def run(self, ctx: AgentRunContext) -> typing.AsyncGenerator[AgentRunResult, None]:
         try:
             config = self._validate_config(ctx)
-            prompt = _input_text(ctx)
-            if not prompt:
-                raise NativeCliError("input text is required", code="claude_code.empty_input")
+            submission = ctx.input.interaction
+            if submission is not None:
+                continuation = _pending_interaction(ctx)
+                if continuation is None:
+                    raise NativeCliError(
+                        "pending Claude interaction state was not found",
+                        code="claude_code.interaction_not_found",
+                    )
+                tool_use_id = str(continuation.get("tool_use_id") or "").strip()
+                if not tool_use_id:
+                    raise NativeCliError(
+                        "pending Claude interaction has no tool_use_id",
+                        code="claude_code.interaction_invalid",
+                    )
+                prompt = _interaction_resume_prompt(_submission_payload(submission, continuation))
+                yield AgentRunResult.state_updated(
+                    ctx.run_id,
+                    PENDING_INTERACTION_STATE_KEY,
+                    None,
+                    scope="conversation",
+                )
+            else:
+                prompt = _input_text(ctx)
+                if not prompt:
+                    raise NativeCliError("input text is required", code="claude_code.empty_input")
             session_id, session_created = self._session_id(ctx, config)
             if session_created:
                 yield AgentRunResult.state_updated(ctx.run_id, SESSION_STATE_KEY, session_id, scope="conversation")
@@ -364,16 +593,21 @@ class NativeClaudeCodeRunner(AgentRunner):
         session_id: str,
         resume: bool,
     ) -> typing.AsyncGenerator[AgentRunResult, None]:
-        access = self._mcp_access(ctx, config)
+        access, tools = self._mcp_access(ctx, config)
         mcp_config_path = ""
         try:
-            mcp_servers = [access.server_config] if access and access.server_config else []
+            mcp_servers = [access.server_config] if access.server_config else []
             mcp_config = _mcp_config_json(mcp_servers, config["mcp_servers"]) if mcp_servers or config["mcp_servers"] else ""
             if mcp_config and config["location"] == "local":
                 mcp_config_path = _write_temp_mcp_config(mcp_config)
             elif mcp_config:
                 mcp_config_path = _MCP_CONFIG_ARG_PLACEHOLDER
-            argv = self._argv(config, session_id=session_id, mcp_config_path=mcp_config_path, resume=resume)
+            argv = self._argv(
+                config,
+                session_id=session_id,
+                mcp_config_path=mcp_config_path,
+                resume=resume,
+            )
             env = {**os.environ, **config["env"]}
             command = argv[0]
             args = argv[1:]
@@ -381,7 +615,7 @@ class NativeClaudeCodeRunner(AgentRunner):
             initial_stdin = _prompt_stdin(prompt)
             if config["location"] == "remote-ssh":
                 ssh_args = ["-T", "-p", str(config["ssh_port"])]
-                if access and access.reverse_tunnel:
+                if access.reverse_tunnel:
                     ssh_args.extend(access.reverse_tunnel.ssh_args())
                 initial_stdin = (_remote_payload_line(mcp_config) if mcp_config else b"") + _prompt_stdin(prompt)
                 ssh_args.extend(
@@ -413,8 +647,7 @@ class NativeClaudeCodeRunner(AgentRunner):
             if mcp_config_path and mcp_config_path != _MCP_CONFIG_ARG_PLACEHOLDER:
                 with contextlib.suppress(OSError):
                     os.unlink(mcp_config_path)
-            if access is not None:
-                access.stop()
+            access.stop()
 
     async def _run_daemon(
         self,
@@ -431,7 +664,11 @@ class NativeClaudeCodeRunner(AgentRunner):
                 port=config["daemon_hub"]["port"],
                 token=config["daemon_hub"]["token"],
             )
-        tools = AgentRunExternalTools(self.get_run_api(ctx), ctx) if config["langbot_assets_enabled"] else None
+        tools = ClaudeCodeExternalTools(
+            self.get_run_api(ctx),
+            ctx,
+            include_assets=config["langbot_assets_enabled"],
+        )
         await hub.wait_for_daemon(config["daemon_id"], config["daemon_connect_timeout"])
         payload = {
             "prompt": prompt,
@@ -464,10 +701,9 @@ class NativeClaudeCodeDaemon(AgentRuntimeDaemonClient):
         config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
         try:
             mcp_servers: list[AgentMCPServerConfig] = []
-            if config.get("langbot_assets_enabled", True):
-                proxy = self.create_mcp_proxy(job_id, request_timeout=float(config.get("timeout") or 300.0))
-                proxy.start()
-                mcp_servers.append(proxy.mcp_server())
+            proxy = self.create_mcp_proxy(job_id, request_timeout=float(config.get("timeout") or 300.0))
+            proxy.start()
+            mcp_servers.append(proxy.mcp_server())
             mcp_config = _mcp_config_json(mcp_servers, list(config.get("mcp_servers") or [])) if mcp_servers else ""
             mcp_config_path = _write_temp_mcp_config(mcp_config) if mcp_config else ""
             argv = [
@@ -478,6 +714,7 @@ class NativeClaudeCodeDaemon(AgentRuntimeDaemonClient):
                 "--output-format",
                 "stream-json",
             ]
+            argv.extend(["--allowedTools", "mcp__langbot_agent__ask_user_question"])
             if mcp_config_path:
                 argv.extend(["--strict-mcp-config", "--mcp-config", mcp_config_path])
             session_id = str(payload.get("session_id") or "")
@@ -574,6 +811,7 @@ async def _run_cli_process_events(
     deadline = time.monotonic() + timeout
     sequence = 0
     final_parts: list[str] = []
+    pending_interaction: tuple[InteractionRequest, dict[str, typing.Any]] | None = None
     stderr_task = asyncio.create_task(process.stderr.read())
     try:
         if initial_stdin:
@@ -600,8 +838,13 @@ async def _run_cli_process_events(
             session_id = _event_session_id(parsed)
             if session_id and session_id != expected_session_id:
                 yield {"type": "state.updated", "data": {"key": SESSION_STATE_KEY, "value": session_id, "scope": "conversation"}}
+            question_tool = _claude_question_tool_use(parsed)
+            if question_tool is not None and pending_interaction is None:
+                tool_use_id, tool_input = question_tool
+                pending_interaction = _interaction_from_claude_tool(tool_use_id, tool_input)
+                continue
             chunk = _event_text(parsed)
-            if chunk:
+            if chunk and pending_interaction is None:
                 final_parts.append(chunk)
                 if streaming:
                     sequence += 1
@@ -621,6 +864,24 @@ async def _run_cli_process_events(
         stderr = _redact_secrets((await stderr_task).decode("utf-8", errors="replace").strip())
         if returncode != 0:
             raise NativeCliError(stderr or f"Claude Code exited with status {returncode}", code="claude_code.process_failed")
+        if pending_interaction is not None:
+            request, continuation = pending_interaction
+            yield {
+                "type": "state.updated",
+                "data": {
+                    "key": PENDING_INTERACTION_STATE_KEY,
+                    "value": continuation,
+                    "scope": "conversation",
+                },
+            }
+            yield {
+                "type": "action.requested",
+                "data": {
+                    "action": "interaction.requested",
+                    "payload": request.model_dump(mode="json"),
+                },
+            }
+            return
         final_text = "".join(final_parts).strip()
         if not final_text:
             raise NativeCliError("Claude Code returned no assistant text", code="claude_code.empty_response")

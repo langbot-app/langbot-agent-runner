@@ -7,7 +7,7 @@ Chạy Claude Code CLI dưới dạng LangBot AgentRunner.
 ## Thông tin gói
 
 - **Runner ID**: `plugin:langbot-team/ClaudeCodeAgent/default`
-- **Phiên bản**: `0.1.2`
+- **Phiên bản**: `0.1.3`
 - **Kho mã nguồn**: [https://github.com/langbot-app/langbot-agent-runner](https://github.com/langbot-app/langbot-agent-runner)
 
 ## Khả năng chính

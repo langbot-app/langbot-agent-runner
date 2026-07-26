@@ -217,6 +217,41 @@ def test_steering_loop_stops_on_failed_turn_without_draining() -> None:
     assert [_type(r) for r in results] == ["message.delta", "run.failed"]
 
 
+def test_steering_loop_stops_on_action_request_without_completing() -> None:
+    steering = _steering_module()
+    api = _FakeRunApi([["never-pulled"]])
+    ctx = _ctx(steering=True)
+
+    async def pausing_turn(prompt: str, resume_session_id: str):
+        yield AgentRunResult.state_updated(
+            "run_steering",
+            "external.pending_interaction",
+            {"interaction_id": "question-1"},
+            scope="conversation",
+        )
+        yield AgentRunResult.action_requested(
+            "run_steering",
+            "interaction.requested",
+            {"interaction_id": "question-1"},
+        )
+
+    results = asyncio.run(
+        _collect(
+            steering.run_with_steering(
+                ctx,
+                lambda: api,
+                pausing_turn,
+                initial_prompt="hello",
+                initial_resume_session_id="",
+                session_state_key="external.session",
+            )
+        )
+    )
+
+    assert api.calls == 0
+    assert [_type(r) for r in results] == ["state.updated", "action.requested"]
+
+
 def test_steering_loop_survives_pull_errors() -> None:
     steering = _steering_module()
     key = "external.session"

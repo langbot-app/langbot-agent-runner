@@ -16,9 +16,11 @@ from langbot_plugin.api.entities.builtin.agent_runner import (
     AgentInput,
     AgentResources,
     AgentRunContext,
+    AgentRunState,
     AgentRuntimeContext,
     AgentTrigger,
     DeliveryContext,
+    InteractionSubmission,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -636,14 +638,21 @@ def test_acp_runner_can_use_sdk_asset_gateway(monkeypatch) -> None:
     ]
 
 
-def _native_ctx(config: dict) -> AgentRunContext:
+def _native_ctx(
+    config: dict,
+    *,
+    text: str = "hello native",
+    conversation_state: dict | None = None,
+    interaction: InteractionSubmission | None = None,
+) -> AgentRunContext:
     return AgentRunContext(
         run_id="run_native",
         trigger=AgentTrigger(type="message.received"),
         event=AgentEventContext(event_id="evt_1", event_type="message.received", source="test"),
-        input=AgentInput(text="hello native"),
+        input=AgentInput(text=text, interaction=interaction),
         delivery=DeliveryContext(surface="test"),
         resources=AgentResources(),
+        state=AgentRunState(conversation=conversation_state or {}),
         runtime=AgentRuntimeContext(),
         config=config,
     )
@@ -673,14 +682,19 @@ def _write_fake_native_cli(path: Path) -> None:
                 "        print('mcp config mode is not 0600', file=sys.stderr)",
                 "        raise SystemExit(4)",
                 "    config = open(config_path, encoding='utf-8').read()",
-                "    if 'Bearer test-secret-token' not in config:",
+                "    servers = json.loads(config).get('mcpServers', {})",
+                "    if len(servers) > 1 and 'Bearer test-secret-token' not in config:",
                 "        print('mcp config file missing expected token', file=sys.stderr)",
                 "        raise SystemExit(5)",
                 "    if 'Bearer test-secret-token' in ' '.join(sys.argv):",
                 "        print('mcp token leaked into argv', file=sys.stderr)",
                 "        raise SystemExit(6)",
-                "print(json.dumps({'type': 'session.started', 'session_id': session_id}))",
-                "print(json.dumps({'type': 'message.completed', 'text': 'FAKE_NATIVE_OK:' + prompt}))",
+                "print(json.dumps({'type': 'session.started', 'session_id': session_id}), flush=True)",
+                "if 'ASK_INTERACTION' in prompt:",
+                "    print(json.dumps({'type': 'assistant', 'session_id': session_id, 'message': {'role': 'assistant', 'content': [{'type': 'tool_use', 'id': 'toolu-question-1', 'name': 'mcp__langbot_agent__ask_user_question', 'input': {'title': 'Need details', 'questions': [{'id': 'environment', 'question': 'Choose an environment', 'options': [{'label': 'staging', 'description': 'Use staging'}, {'label': 'production', 'description': 'Use production'}], 'multiSelect': False}]}}]}}), flush=True)",
+                "    print(json.dumps({'type': 'message.completed', 'text': 'WAITING_FOR_INTERACTION'}), flush=True)",
+                "else:",
+                "    print(json.dumps({'type': 'message.completed', 'text': 'FAKE_NATIVE_OK:' + prompt}), flush=True)",
             ]
         ),
         encoding="utf-8",
@@ -715,6 +729,9 @@ def _write_fake_codex_app_server(path: Path) -> None:
                 "        prompt = params.get('input', [{}])[0].get('text', '')",
                 "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {}})",
                 "        send({'jsonrpc': '2.0', 'method': 'turn/started', 'params': {'threadId': thread_id, 'turn': {'id': 'turn-1'}}})",
+                "        if 'ASK_INTERACTION' in prompt:",
+                "            send({'jsonrpc': '2.0', 'id': 700, 'method': 'item/tool/call', 'params': {'threadId': thread_id, 'turnId': 'turn-1', 'callId': 'call-question-1', 'tool': 'ask_user_question', 'arguments': {'title': 'Need details', 'questions': [{'id': 'environment', 'question': 'Choose an environment', 'options': [{'label': 'staging', 'value': 'staging'}, {'label': 'production', 'value': 'production'}]}]}}})",
+                "            continue",
                 "        send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'item-1', 'type': 'agentMessage', 'text': 'FAKE_CODEX_APP_SERVER_OK:' + prompt, 'phase': 'final_answer'}}})",
                 "        send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'item-1', 'type': 'agentMessage', 'text': 'FAKE_CODEX_APP_SERVER_OK:' + prompt, 'phase': 'final_answer'}}})",
                 "        send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'item-2', 'type': 'agentMessage', 'text': 'FAKE_CODEX_APP_SERVER_OK:' + prompt, 'phase': 'final_answer'}}})",
@@ -819,6 +836,65 @@ def test_claude_code_runner_non_streaming_emits_one_message(tmp_path: Path) -> N
     assert "message" not in results[2].data
 
 
+def test_claude_code_runner_pauses_for_question_and_resumes_with_tool_result(tmp_path: Path) -> None:
+    fake_cli = tmp_path / "fake_native_cli.py"
+    _write_fake_native_cli(fake_cli)
+    module = _load_runner_module("claude-code-agent")
+    native = sys.modules["pkg.native_cli"]
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    runner.get_run_api = lambda ctx: None
+    config = {
+        "location": "local",
+        "command": sys.executable,
+        "args-json": [str(fake_cli)],
+        "workspace": str(tmp_path),
+        "langbot-assets-enabled": False,
+    }
+
+    paused = asyncio.run(_collect_async(runner.run(_native_ctx(config, text="ASK_INTERACTION"))))
+
+    assert [item.type for item in paused] == ["state.updated", "state.updated", "action.requested"]
+    pending = paused[1].data["value"]
+    request = paused[2].data["payload"]
+    assert paused[2].data["action"] == "interaction.requested"
+    assert request["fields"][0]["type"] == "select"
+    assert request["fields"][0]["label"] == "Choose an environment"
+
+    resumed = asyncio.run(
+        _collect_async(
+            runner.run(
+                _native_ctx(
+                    config,
+                    conversation_state={
+                        native.SESSION_STATE_KEY: "fake-session",
+                        native.PENDING_INTERACTION_STATE_KEY: pending,
+                    },
+                    interaction=InteractionSubmission(
+                        interaction_id=request["interaction_id"],
+                        action_id="submit",
+                        values={"environment": "staging"},
+                    ),
+                )
+            )
+        )
+    )
+
+    assert resumed[0].data == {
+        "key": native.PENDING_INTERACTION_STATE_KEY,
+        "value": None,
+        "scope": "conversation",
+    }
+    assert resumed[-1].type == "run.completed"
+    message_text = "".join(
+        str(item.data.get("chunk", {}).get("content") or "")
+        for item in resumed
+        if item.type == "message.delta"
+    )
+    assert "authoritative response" in message_text
+    assert '"answer": "staging"' in message_text
+
+
 def test_codex_runner_executes_fake_native_cli(tmp_path: Path) -> None:
     fake_cli = tmp_path / "fake_codex_app_server.py"
     _write_fake_codex_app_server(fake_cli)
@@ -848,6 +924,59 @@ def test_codex_runner_executes_fake_native_cli(tmp_path: Path) -> None:
     assert results[0].data["key"] == "external.codex_session_id"
     assert results[0].data["value"] == "thread-123"
     assert [item.sequence for item in results] == [1, 2, 3]
+
+
+def test_codex_runner_pauses_for_dynamic_question_and_resumes_thread(tmp_path: Path) -> None:
+    fake_cli = tmp_path / "fake_codex_app_server.py"
+    _write_fake_codex_app_server(fake_cli)
+    module = _load_runner_module("codex-agent")
+    native = sys.modules["pkg.native_cli"]
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    runner.get_run_api = lambda ctx: None
+    config = {
+        "location": "local",
+        "command": f"{sys.executable} {fake_cli}",
+        "workspace": str(tmp_path),
+        "langbot-assets-enabled": False,
+    }
+
+    paused = asyncio.run(_collect_async(runner.run(_native_ctx(config, text="ASK_INTERACTION"))))
+
+    assert [item.type for item in paused] == ["state.updated", "state.updated", "action.requested"]
+    pending = paused[1].data["value"]
+    request = paused[2].data["payload"]
+    assert paused[2].data["action"] == "interaction.requested"
+    assert request["fields"][0]["type"] == "select"
+    assert pending["provider_call_id"] == "call-question-1"
+
+    resumed = asyncio.run(
+        _collect_async(
+            runner.run(
+                _native_ctx(
+                    config,
+                    conversation_state={
+                        native.SESSION_STATE_KEY: "thread-123",
+                        native.PENDING_INTERACTION_STATE_KEY: pending,
+                    },
+                    interaction=InteractionSubmission(
+                        interaction_id=request["interaction_id"],
+                        action_id="submit",
+                        values={"environment": "production"},
+                    ),
+                )
+            )
+        )
+    )
+
+    assert resumed[0].data["key"] == native.PENDING_INTERACTION_STATE_KEY
+    assert resumed[0].data["value"] is None
+    assert resumed[-1].type == "run.completed"
+    assert any(
+        "production" in str(item.data.get("chunk", {}).get("content") or "")
+        for item in resumed
+        if item.type == "message.delta"
+    )
 
 
 def test_codex_runner_non_streaming_emits_one_message(tmp_path: Path) -> None:

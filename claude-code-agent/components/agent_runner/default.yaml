@@ -153,6 +153,7 @@ spec:
     multimodal_input: false
     interrupt: false
     steering: true
+    interactions: true
   permissions:
     tools:
       - detail
@@ -161,6 +162,8 @@ spec:
       - retrieve
     history:
       - page
+    interactions:
+      - request
 execution:
   python:
     path: default.py

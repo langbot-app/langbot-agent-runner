@@ -7,7 +7,7 @@ Run Claude Code CLI as a LangBot AgentRunner.
 ## Package information
 
 - **Runner ID**: `plugin:langbot-team/ClaudeCodeAgent/default`
-- **Version**: `0.1.2`
+- **Version**: `0.1.3`
 - **Repository**: [https://github.com/langbot-app/langbot-agent-runner](https://github.com/langbot-app/langbot-agent-runner)
 
 ## Capabilities
@@ -62,13 +62,14 @@ Run Claude Code CLI as a LangBot AgentRunner.
 - Steering only applies when the run has a conversation scope; otherwise the
   runner transparently falls back to single-turn execution.
 
-## Structured Interaction Status
+## Structured interactions
 
-The SDK and LangBot Host expose provider-neutral `interaction.requested` and
-`interaction.submitted` events, but this runner does not declare that
-capability yet. Its current `claude -p` transport closes stdin after the prompt,
-while Claude permission requests require a response tied to the live process.
-The runner must first gain a durable bidirectional daemon or a verified
-checkpoint/resume mapping for one-time permission decisions. Enabling the
-manifest flag alone would advertise confirmations that cannot be resumed
-safely.
+The runner exposes a real MCP tool named `ask_user_question` through the
+run-scoped LangBot MCP bridge. Its standard Claude `tool_use` event is converted
+to LangBot's provider-neutral `interaction.requested` contract. The CLI process
+is stopped while the user is answering. A card submission starts a new
+AgentRun, resumes the same Claude Code session, and sends the answer as the next
+authoritative user turn. Claude CLI must complete an MCP call before persisting
+a resumable session, so it cannot accept a second result for the old
+`tool_use_id` after the process exits. No Python coroutine or Claude process is
+kept waiting for the user.

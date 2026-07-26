@@ -25,15 +25,75 @@ from langbot_plugin.api.agent_tools.external_tools import AgentRunExternalTools
 from langbot_plugin.api.agent_tools.mcp_access import AgentRunMCPAccess
 from langbot_plugin.api.agent_tools.mcp_config import AgentMCPServerConfig
 from langbot_plugin.api.definition.components.agent_runner.runner import AgentRunner
-from langbot_plugin.api.entities.builtin.agent_runner import AgentRunContext, AgentRunResult
+from langbot_plugin.api.entities.builtin.agent_runner import (
+    AgentRunContext,
+    AgentRunResult,
+    InteractionAction,
+    InteractionField,
+    InteractionOption,
+    InteractionRequest,
+    InteractionSubmission,
+)
 
 from pkg.steering import run_with_steering
 
 SESSION_STATE_KEY = "external.codex_session_id"
+PENDING_INTERACTION_STATE_KEY = "external.codex_pending_interaction"
 SUPPORTED_LOCATIONS = {"local", "remote-ssh", "daemon"}
 DEFAULT_TIMEOUT_SECONDS = 1800.0
 CODEX_STDIO_LIMIT_BYTES = 16 * 1024 * 1024
 logger = logging.getLogger(__name__)
+
+
+ASK_USER_QUESTION_TOOL = {
+    "type": "function",
+    "name": "ask_user_question",
+    "description": (
+        "Ask the user one or more questions through the LangBot conversation surface. "
+        "Use this when work cannot continue without a user choice, confirmation, or value. "
+        "Calling it pauses the current run; the user's answers arrive in a later turn."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Short title for the interaction."},
+            "description": {"type": "string", "description": "Optional context shown before the questions."},
+            "questions": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "question": {"type": "string"},
+                        "header": {"type": "string"},
+                        "placeholder": {"type": "string"},
+                        "required": {"type": "boolean"},
+                        "multiple": {"type": "boolean"},
+                        "options": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": {"type": "string"},
+                                    "value": {"type": "string"},
+                                    "description": {"type": "string"},
+                                },
+                                "required": ["label"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": ["id", "question"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["questions"],
+        "additionalProperties": False,
+    },
+}
 
 
 _AUTH_ASSIGNMENT_RE = re.compile(r"(?i)(\bAuthorization\b[\"']?\s*[:=]\s*[\"']?)(?:Bearer\s+)?[^\"'\s,}\]]+")
@@ -376,6 +436,135 @@ def _input_text(ctx: AgentRunContext) -> str:
     return ctx.input.to_text().strip()
 
 
+def _interaction_from_questions(
+    *,
+    interaction_id: str,
+    title: str,
+    description: str,
+    questions: typing.Any,
+) -> tuple[InteractionRequest, dict[str, typing.Any]]:
+    if not isinstance(questions, list) or not questions:
+        raise NativeCliError("ask_user_question requires at least one question", code="codex.interaction_invalid")
+
+    fields: list[InteractionField] = []
+    continuation_questions: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for index, raw_question in enumerate(questions[:20], start=1):
+        question = raw_question if isinstance(raw_question, dict) else {}
+        field_id = str(question.get("id") or f"question_{index}").strip()[:128]
+        if not field_id or field_id in seen_ids:
+            field_id = f"question_{index}"
+        seen_ids.add(field_id)
+        label = str(question.get("question") or question.get("header") or f"Question {index}").strip()[:512]
+        raw_options = question.get("options")
+        options: list[InteractionOption] = []
+        if isinstance(raw_options, list):
+            for option_index, raw_option in enumerate(raw_options[:100], start=1):
+                option = raw_option if isinstance(raw_option, dict) else {"label": raw_option}
+                option_label = str(option.get("label") or option.get("value") or f"Option {option_index}").strip()
+                option_value = str(option.get("value") or option_label).strip()
+                if not option_label or not option_value:
+                    continue
+                options.append(
+                    InteractionOption(
+                        value=option_value[:512],
+                        label=option_label[:512],
+                        description=(str(option["description"])[:2000] if option.get("description") else None),
+                    )
+                )
+        multiple = bool(question.get("multiple") or question.get("multiSelect"))
+        field_type = "multiselect" if options and multiple else "select" if options else "text"
+        fields.append(
+            InteractionField(
+                id=field_id,
+                label=label,
+                type=field_type,
+                required=bool(question.get("required", True)),
+                options=options,
+                placeholder=(str(question["placeholder"])[:1000] if question.get("placeholder") else None),
+            )
+        )
+        continuation_questions.append({"id": field_id, "question": label})
+
+    request_title = (title or "User input required").strip()[:1000]
+    request = InteractionRequest(
+        interaction_id=interaction_id[:255],
+        kind="form",
+        title=request_title,
+        description=description.strip()[:10000] or None,
+        fields=fields,
+        actions=[InteractionAction(id="submit", label="Submit", style="primary")],
+        fallback_text=f"{request_title}: " + "; ".join(field.label for field in fields),
+    )
+    continuation = {
+        "version": 1,
+        "interaction_id": request.interaction_id,
+        "questions": continuation_questions,
+    }
+    return request, continuation
+
+
+def _interaction_from_codex_request(
+    method: str,
+    params: dict[str, typing.Any],
+) -> tuple[InteractionRequest, dict[str, typing.Any]]:
+    if method == "item/tool/call":
+        arguments = params.get("arguments")
+        data = arguments if isinstance(arguments, dict) else {}
+        correlation_id = str(params.get("callId") or uuid.uuid4().hex)
+        title = str(data.get("title") or "User input required")
+        description = str(data.get("description") or "")
+        questions = data.get("questions")
+    else:
+        correlation_id = str(params.get("itemId") or uuid.uuid4().hex)
+        title = "User input required"
+        description = ""
+        questions = params.get("questions")
+    request, continuation = _interaction_from_questions(
+        interaction_id=f"codex-{correlation_id}",
+        title=title,
+        description=description,
+        questions=questions,
+    )
+    continuation.update(
+        {
+            "provider_method": method,
+            "provider_call_id": correlation_id,
+            "thread_id": str(params.get("threadId") or ""),
+            "turn_id": str(params.get("turnId") or ""),
+        }
+    )
+    return request, continuation
+
+
+def _pending_interaction(ctx: AgentRunContext) -> dict[str, typing.Any] | None:
+    value = ctx.state.conversation.get(PENDING_INTERACTION_STATE_KEY)
+    return dict(value) if isinstance(value, dict) else None
+
+
+def _interaction_resume_prompt(
+    submission: InteractionSubmission,
+    continuation: dict[str, typing.Any],
+) -> str:
+    if submission.interaction_id != continuation.get("interaction_id"):
+        raise NativeCliError("interaction submission does not match the pending Codex request", code="codex.interaction_mismatch")
+    question_by_id = {
+        str(item.get("id")): str(item.get("question") or item.get("id"))
+        for item in continuation.get("questions", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    answers = [
+        {"id": field_id, "question": question_by_id.get(field_id, field_id), "answer": value}
+        for field_id, value in submission.values.items()
+    ]
+    payload = {"action": submission.action_id, "answers": answers}
+    return (
+        "The user answered the previously paused ask_user_question call. "
+        "Treat these values as the authoritative response and continue the interrupted task.\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
+
+
 class NativeCodexRunner(AgentRunner):
     def _validate_config(self, ctx: AgentRunContext) -> dict[str, typing.Any]:
         data = ctx.config or {}
@@ -419,6 +608,8 @@ class NativeCodexRunner(AgentRunner):
         stored = self._stored_session_id(ctx)
         if not stored or not config["reuse_session"]:
             return ""
+        if ctx.input.interaction is not None and _pending_interaction(ctx) is not None:
+            return stored
         if config["location"] == "local":
             env = {**os.environ, **config["env"]}
             pending_calls = _pending_session_tool_calls(_shared_codex_home(env), stored)
@@ -454,9 +645,22 @@ class NativeCodexRunner(AgentRunner):
     async def run(self, ctx: AgentRunContext) -> typing.AsyncGenerator[AgentRunResult, None]:
         try:
             config = self._validate_config(ctx)
-            prompt = _input_text(ctx)
-            if not prompt:
-                raise NativeCliError("input text is required", code="codex.empty_input")
+            submission = ctx.input.interaction
+            if submission is not None:
+                continuation = _pending_interaction(ctx)
+                if continuation is None:
+                    raise NativeCliError("pending Codex interaction state was not found", code="codex.interaction_not_found")
+                prompt = _interaction_resume_prompt(submission, continuation)
+                yield AgentRunResult.state_updated(
+                    ctx.run_id,
+                    PENDING_INTERACTION_STATE_KEY,
+                    None,
+                    scope="conversation",
+                )
+            else:
+                prompt = _input_text(ctx)
+                if not prompt:
+                    raise NativeCliError("input text is required", code="codex.empty_input")
 
             def run_turn(
                 turn_prompt: str, resume_session_id: str
@@ -699,6 +903,8 @@ class _CodexAppServerClient:
         self.final_error = ""
         self.seen_agent_message_item_ids: set[str] = set()
         self.final_chunk_emitted = False
+        self.interaction_request: InteractionRequest | None = None
+        self.interaction_continuation: dict[str, typing.Any] | None = None
 
     async def _write_json(self, payload: dict[str, typing.Any]) -> None:
         assert self.process.stdin is not None
@@ -730,7 +936,7 @@ class _CodexAppServerClient:
                 "clientInfo": {
                     "name": "langbot-codex-agent",
                     "title": "LangBot Codex Agent",
-                "version": "0.1.7",
+                "version": "0.1.8",
                 },
                 "capabilities": {"experimentalApi": True},
             },
@@ -777,6 +983,7 @@ class _CodexAppServerClient:
                 "includeApplyPatchTool": None,
                 "experimentalRawEvents": False,
                 "persistExtendedHistory": True,
+                "dynamicTools": [ASK_USER_QUESTION_TOOL],
             },
         )
         thread_id = _extract_thread_id(result)
@@ -843,10 +1050,60 @@ class _CodexAppServerClient:
         method = str(raw.get("method") or "")
         if method in {"item/commandExecution/requestApproval", "execCommandApproval", "item/fileChange/requestApproval", "applyPatchApproval"}:
             await self.respond(request_id, {"decision": "accept"})
+        elif method in {"item/tool/call", "item/tool/requestUserInput"}:
+            params = raw.get("params")
+            if not isinstance(params, dict):
+                params = {}
+            if method == "item/tool/call" and str(params.get("tool") or "") != "ask_user_question":
+                await self.respond_error(request_id, f"unhandled dynamic tool: {params.get('tool')}")
+                return
+            try:
+                request, continuation = _interaction_from_codex_request(method, params)
+            except NativeCliError as exc:
+                await self.respond_error(request_id, exc.message)
+                return
+            self.interaction_request = request
+            self.interaction_continuation = continuation
+            if method == "item/tool/call":
+                await self.respond(
+                    request_id,
+                    {
+                        "success": True,
+                        "contentItems": [
+                            {
+                                "type": "inputText",
+                                "text": "LangBot paused this run for user input; the answer will arrive in a later turn.",
+                            }
+                        ],
+                    },
+                )
+            else:
+                empty_answers = {
+                    field.id: {"answers": []}
+                    for field in request.fields
+                }
+                await self.respond(request_id, {"answers": empty_answers})
+            await self._interrupt_turn(params)
+            self.finish_turn()
         elif method == "mcpServer/elicitation/request":
             await self.respond(request_id, {"action": "accept", "content": None, "_meta": None})
         else:
             await self.respond_error(request_id, f"unhandled server request: {method}")
+
+    async def _interrupt_turn(self, params: dict[str, typing.Any]) -> None:
+        thread_id = str(params.get("threadId") or self.thread_id)
+        turn_id = str(params.get("turnId") or "")
+        if not thread_id or not turn_id:
+            return
+        self.next_id += 1
+        await self._write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": self.next_id,
+                "method": "turn/interrupt",
+                "params": {"threadId": thread_id, "turnId": turn_id},
+            }
+        )
 
     async def handle_notification(self, raw: dict[str, typing.Any]) -> None:
         method = str(raw.get("method") or "")
@@ -1034,6 +1291,27 @@ async def _run_cli_process_events(
         stderr = _redact_secrets((await stderr_task).decode("utf-8", errors="replace").strip())
         if process.returncode not in (0, None):
             raise NativeCliError(stderr or f"Codex app-server exited with status {process.returncode}", code="codex.process_failed")
+        if client.interaction_request is not None and client.interaction_continuation is not None:
+            result_sequence += 1
+            yield {
+                "type": "state.updated",
+                "sequence": result_sequence,
+                "data": {
+                    "key": PENDING_INTERACTION_STATE_KEY,
+                    "value": client.interaction_continuation,
+                    "scope": "conversation",
+                },
+            }
+            result_sequence += 1
+            yield {
+                "type": "action.requested",
+                "sequence": result_sequence,
+                "data": {
+                    "action": "interaction.requested",
+                    "payload": client.interaction_request.model_dump(mode="json"),
+                },
+            }
+            return
         if client.final_error:
             raise NativeCliError(client.final_error, code="codex.turn_failed")
         final_text = "".join(client.final_parts).strip()

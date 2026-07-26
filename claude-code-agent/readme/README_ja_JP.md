@@ -7,7 +7,7 @@ Claude Code CLI を LangBot AgentRunner として実行します。
 ## パッケージ情報
 
 - **Runner ID**: `plugin:langbot-team/ClaudeCodeAgent/default`
-- **バージョン**: `0.1.2`
+- **バージョン**: `0.1.3`
 - **リポジトリ**: [https://github.com/langbot-app/langbot-agent-runner](https://github.com/langbot-app/langbot-agent-runner)
 
 ## 主な機能

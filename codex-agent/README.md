@@ -7,7 +7,7 @@ Run Codex CLI as a LangBot AgentRunner.
 ## Package information
 
 - **Runner ID**: `plugin:langbot-team/CodexAgent/default`
-- **Version**: `0.1.7`
+- **Version**: `0.1.8`
 - **Repository**: [https://github.com/langbot-app/langbot-agent-runner](https://github.com/langbot-app/langbot-agent-runner)
 
 ## Capabilities
@@ -55,3 +55,18 @@ Run Codex CLI as a LangBot AgentRunner.
 - The runner can use only LangBot resources authorized for the current run.
 - Availability, model abilities, and rate limits depend on the external service.
 - See the full Chinese README at the package root for advanced behavior and product-specific limitations.
+
+## Structured interactions
+
+The runner registers a real Codex app-server dynamic tool named
+`ask_user_question` and also accepts Codex's native
+`item/tool/requestUserInput` request. Both are converted to LangBot's
+provider-neutral `interaction.requested` contract, so Lark, DingTalk, and other
+delivery adapters can render the same fields and actions.
+
+The app-server process is stopped while the user is answering. The submission
+starts a new AgentRun and resumes the same Codex thread. Codex app-server does
+not support replying to an old JSON-RPC tool request from a new process, so the
+answer is delivered as the next authoritative user turn rather than injected
+as the old tool result. This is a provider transport limitation; the interaction
+is still a real model tool call and no process is kept waiting.
