@@ -7,7 +7,7 @@
 ## 套件資訊
 
 - **Runner ID**: `plugin:langbot-team/CodexAgent/default`
-- **版本**: `0.1.8`
+- **版本**: `0.1.9`
 - **程式碼儲存庫**: [https://github.com/langbot-app/langbot-agent-runner](https://github.com/langbot-app/langbot-agent-runner)
 
 ## 主要能力
@@ -34,6 +34,8 @@
 | `timeout` | `integer` | 否 | `300` |
 | `streaming` | `boolean` | 否 | true |
 | `reuse-session` | `boolean` | 否 | true |
+| `approval-policy` | `select` | 否 | `untrusted` |
+| `sandbox-mode` | `select` | 否 | `inherit` |
 | `langbot-assets-enabled` | `boolean` | 否 | true |
 | `mcp-bridge-transport` | `select` | 否 | `auto` |
 | `mcp-servers-json` | `string` | 否 | `[]` |

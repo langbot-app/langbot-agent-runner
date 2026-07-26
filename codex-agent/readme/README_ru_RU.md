@@ -7,7 +7,7 @@
 ## Информация о пакете
 
 - **Runner ID**: `plugin:langbot-team/CodexAgent/default`
-- **Версия**: `0.1.8`
+- **Версия**: `0.1.9`
 - **Репозиторий**: [https://github.com/langbot-app/langbot-agent-runner](https://github.com/langbot-app/langbot-agent-runner)
 
 ## Основные возможности
@@ -34,6 +34,8 @@
 | `timeout` | `integer` | Нет | `300` |
 | `streaming` | `boolean` | Нет | true |
 | `reuse-session` | `boolean` | Нет | true |
+| `approval-policy` | `select` | Нет | `untrusted` |
+| `sandbox-mode` | `select` | Нет | `inherit` |
 | `langbot-assets-enabled` | `boolean` | Нет | true |
 | `mcp-bridge-transport` | `select` | Нет | `auto` |
 | `mcp-servers-json` | `string` | Нет | `[]` |

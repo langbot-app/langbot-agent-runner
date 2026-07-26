@@ -112,6 +112,54 @@ spec:
       type: boolean
       required: false
       default: true
+    - name: approval-policy
+      label:
+        en_US: Approval Policy
+        zh_Hans: 审批策略
+      type: select
+      required: false
+      default: untrusted
+      options:
+        - name: on-request
+          label:
+            en_US: On Request
+            zh_Hans: 按需审批
+        - name: untrusted
+          label:
+            en_US: Untrusted Commands
+            zh_Hans: 未受信任命令审批
+        - name: never
+          label:
+            en_US: Never Ask
+            zh_Hans: 从不询问
+        - name: inherit
+          label:
+            en_US: Inherit Codex Config
+            zh_Hans: 继承 Codex 配置
+    - name: sandbox-mode
+      label:
+        en_US: Sandbox Mode
+        zh_Hans: 沙箱模式
+      type: select
+      required: false
+      default: inherit
+      options:
+        - name: inherit
+          label:
+            en_US: Inherit Codex Config
+            zh_Hans: 继承 Codex 配置
+        - name: read-only
+          label:
+            en_US: Read Only
+            zh_Hans: 只读
+        - name: workspace-write
+          label:
+            en_US: Workspace Write
+            zh_Hans: 工作区可写
+        - name: danger-full-access
+          label:
+            en_US: Full Access
+            zh_Hans: 完全访问
     - name: langbot-assets-enabled
       label:
         en_US: Enable LangBot Tools and Knowledge

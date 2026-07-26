@@ -7,7 +7,7 @@ Run Codex CLI as a LangBot AgentRunner.
 ## Package information
 
 - **Runner ID**: `plugin:langbot-team/CodexAgent/default`
-- **Version**: `0.1.8`
+- **Version**: `0.1.9`
 - **Repository**: [https://github.com/langbot-app/langbot-agent-runner](https://github.com/langbot-app/langbot-agent-runner)
 
 ## Capabilities
@@ -31,9 +31,11 @@ Run Codex CLI as a LangBot AgentRunner.
 | `ssh-target` | `string` | No | Empty |
 | `ssh-port` | `integer` | No | `22` |
 | `daemon-id` | `string` | No | Empty |
-| `timeout` | `integer` | No | `300` |
+| `timeout` | `integer` | No | `1800` |
 | `streaming` | `boolean` | No | true |
 | `reuse-session` | `boolean` | No | true |
+| `approval-policy` | `select` | No | `untrusted` |
+| `sandbox-mode` | `select` | No | `inherit` |
 | `langbot-assets-enabled` | `boolean` | No | true |
 | `mcp-bridge-transport` | `select` | No | `auto` |
 | `mcp-servers-json` | `string` | No | `[]` |
@@ -70,3 +72,8 @@ not support replying to an old JSON-RPC tool request from a new process, so the
 answer is delivered as the next authoritative user turn rather than injected
 as the old tool result. This is a provider transport limitation; the interaction
 is still a real model tool call and no process is kept waiting.
+
+Codex app-server command-execution and file-change approval requests are also
+converted to action-only confirmation cards. The previous turn is cancelled
+while the user decides. Approval resumes the same thread and grants exactly one
+matching retry; a different command or file change requires a new approval.

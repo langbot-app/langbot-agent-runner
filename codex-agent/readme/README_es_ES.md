@@ -7,7 +7,7 @@ Ejecuta Codex CLI como LangBot AgentRunner.
 ## Información del paquete
 
 - **Runner ID**: `plugin:langbot-team/CodexAgent/default`
-- **Versión**: `0.1.8`
+- **Versión**: `0.1.9`
 - **Repositorio**: [https://github.com/langbot-app/langbot-agent-runner](https://github.com/langbot-app/langbot-agent-runner)
 
 ## Capacidades principales
@@ -34,6 +34,8 @@ Ejecuta Codex CLI como LangBot AgentRunner.
 | `timeout` | `integer` | No | `300` |
 | `streaming` | `boolean` | No | true |
 | `reuse-session` | `boolean` | No | true |
+| `approval-policy` | `select` | No | `untrusted` |
+| `sandbox-mode` | `select` | No | `inherit` |
 | `langbot-assets-enabled` | `boolean` | No | true |
 | `mcp-bridge-transport` | `select` | No | `auto` |
 | `mcp-servers-json` | `string` | No | `[]` |

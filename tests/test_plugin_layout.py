@@ -709,6 +709,7 @@ def _write_fake_codex_app_server(path: Path) -> None:
                 "import json",
                 "import sys",
                 "thread_id = 'thread-123'",
+                "pending_approval_prompt = ''",
                 "def send(payload):",
                 "    print(json.dumps(payload), flush=True)",
                 "for line in sys.stdin:",
@@ -716,6 +717,14 @@ def _write_fake_codex_app_server(path: Path) -> None:
                 "    method = request.get('method')",
                 "    request_id = request.get('id')",
                 "    params = request.get('params') or {}",
+                "    if request_id == 701 and method is None and pending_approval_prompt:",
+                "        decision = (request.get('result') or {}).get('decision')",
+                "        if decision == 'accept':",
+                "            send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'command-1', 'type': 'commandExecution', 'command': 'Write approval-probe.txt', 'cwd': '.', 'commandActions': [], 'status': 'completed', 'aggregatedOutput': 'created'}}})",
+                "            send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'approval-result', 'type': 'agentMessage', 'text': 'APPROVAL_EXECUTED', 'phase': 'final_answer'}}})",
+                "            send({'jsonrpc': '2.0', 'method': 'turn/completed', 'params': {'threadId': thread_id, 'turn': {'id': 'turn-approval', 'status': 'completed'}}})",
+                "        pending_approval_prompt = ''",
+                "        continue",
                 "    if request_id is not None and method == 'initialize':",
                 "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {}})",
                 "    elif method == 'initialized':",
@@ -729,6 +738,15 @@ def _write_fake_codex_app_server(path: Path) -> None:
                 "        prompt = params.get('input', [{}])[0].get('text', '')",
                 "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {}})",
                 "        send({'jsonrpc': '2.0', 'method': 'turn/started', 'params': {'threadId': thread_id, 'turn': {'id': 'turn-1'}}})",
+                "        if 'rejected the previously paused Codex operation' in prompt:",
+                "            send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'rejection-result', 'type': 'agentMessage', 'text': 'APPROVAL_REJECTED', 'phase': 'final_answer'}}})",
+                "            send({'jsonrpc': '2.0', 'method': 'turn/completed', 'params': {'threadId': thread_id, 'turn': {'id': 'turn-rejected', 'status': 'completed'}}})",
+                "            continue",
+                "        if 'TRIGGER_COMMAND_APPROVAL' in prompt or 'approved exactly one retry' in prompt:",
+                "            pending_approval_prompt = prompt",
+                "            send({'jsonrpc': '2.0', 'method': 'item/started', 'params': {'threadId': thread_id, 'item': {'id': 'command-1', 'type': 'commandExecution', 'command': 'Write approval-probe.txt', 'cwd': '.', 'commandActions': [], 'status': 'inProgress'}}})",
+                "            send({'jsonrpc': '2.0', 'id': 701, 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': thread_id, 'turnId': 'turn-approval', 'itemId': 'command-1', 'startedAtMs': 1700000000000, 'command': 'Write approval-probe.txt', 'cwd': '.', 'reason': 'Create the requested test file'}})",
+                "            continue",
                 "        if 'ASK_INTERACTION' in prompt:",
                 "            send({'jsonrpc': '2.0', 'id': 700, 'method': 'item/tool/call', 'params': {'threadId': thread_id, 'turnId': 'turn-1', 'callId': 'call-question-1', 'tool': 'ask_user_question', 'arguments': {'title': 'Need details', 'questions': [{'id': 'environment', 'question': 'Choose an environment', 'options': [{'label': 'staging', 'value': 'staging'}, {'label': 'production', 'value': 'production'}]}]}}})",
                 "            continue",
@@ -977,6 +995,181 @@ def test_codex_runner_pauses_for_dynamic_question_and_resumes_thread(tmp_path: P
         for item in resumed
         if item.type == "message.delta"
     )
+
+
+def test_codex_runner_pauses_for_native_approval_and_approves_exact_retry(tmp_path: Path) -> None:
+    fake_cli = tmp_path / "fake_codex_app_server.py"
+    _write_fake_codex_app_server(fake_cli)
+    module = _load_runner_module("codex-agent")
+    native = sys.modules["pkg.native_cli"]
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    runner.get_run_api = lambda ctx: None
+    config = {
+        "location": "local",
+        "command": f"{sys.executable} {fake_cli}",
+        "workspace": str(tmp_path),
+        "langbot-assets-enabled": False,
+        "approval-policy": "on-request",
+        "sandbox-mode": "read-only",
+    }
+
+    paused = asyncio.run(_collect_async(runner.run(_native_ctx(config, text="TRIGGER_COMMAND_APPROVAL"))))
+
+    assert [item.type for item in paused] == ["state.updated", "state.updated", "action.requested"]
+    pending = paused[1].data["value"]
+    request = paused[2].data["payload"]
+    assert pending["kind"] == "approval"
+    assert pending["approval_category"] == "command"
+    assert request["kind"] == "confirmation"
+    assert request["fields"] == []
+    assert [action["id"] for action in request["actions"]] == ["approve_once", "reject"]
+    assert "Write approval-probe.txt" in request["description"]
+
+    resumed = asyncio.run(
+        _collect_async(
+            runner.run(
+                _native_ctx(
+                    config,
+                    conversation_state={
+                        native.SESSION_STATE_KEY: "thread-123",
+                        native.PENDING_INTERACTION_STATE_KEY: pending,
+                    },
+                    interaction=InteractionSubmission(
+                        interaction_id=request["interaction_id"],
+                        action_id="approve_once",
+                    ),
+                )
+            )
+        )
+    )
+
+    assert resumed[0].data["key"] == native.PENDING_INTERACTION_STATE_KEY
+    assert resumed[0].data["value"] is None
+    assert resumed[-1].type == "run.completed"
+    assert any(
+        "APPROVAL_EXECUTED" in str(item.data.get("chunk", {}).get("content") or "")
+        for item in resumed
+        if item.type == "message.delta"
+    )
+
+
+def test_codex_runner_resumes_after_native_approval_rejection(tmp_path: Path) -> None:
+    fake_cli = tmp_path / "fake_codex_app_server.py"
+    _write_fake_codex_app_server(fake_cli)
+    module = _load_runner_module("codex-agent")
+    native = sys.modules["pkg.native_cli"]
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    runner.get_run_api = lambda ctx: None
+    config = {
+        "location": "local",
+        "command": f"{sys.executable} {fake_cli}",
+        "workspace": str(tmp_path),
+        "langbot-assets-enabled": False,
+    }
+    paused = asyncio.run(_collect_async(runner.run(_native_ctx(config, text="TRIGGER_COMMAND_APPROVAL"))))
+    pending = paused[1].data["value"]
+    request = paused[2].data["payload"]
+
+    resumed = asyncio.run(
+        _collect_async(
+            runner.run(
+                _native_ctx(
+                    config,
+                    conversation_state={
+                        native.SESSION_STATE_KEY: "thread-123",
+                        native.PENDING_INTERACTION_STATE_KEY: pending,
+                    },
+                    interaction=InteractionSubmission(
+                        interaction_id=request["interaction_id"],
+                        action_id="reject",
+                    ),
+                )
+            )
+        )
+    )
+
+    assert resumed[-1].type == "run.completed"
+    assert any(
+        "APPROVAL_REJECTED" in str(item.data.get("chunk", {}).get("content") or "")
+        for item in resumed
+        if item.type == "message.delta"
+    )
+
+
+def test_codex_approval_fingerprint_changes_with_operation() -> None:
+    _load_runner_module("codex-agent")
+    native = sys.modules["pkg.native_cli"]
+    category, first = native._approval_evidence(
+        "item/commandExecution/requestApproval",
+        {"command": "git status", "cwd": "K:/repo"},
+        {},
+    )
+    _, second = native._approval_evidence(
+        "item/commandExecution/requestApproval",
+        {"command": "git push", "cwd": "K:/repo"},
+        {},
+    )
+
+    assert native._approval_fingerprint(category, first) != native._approval_fingerprint(category, second)
+
+
+def test_codex_runner_resolves_bare_windows_command_to_npm_cli(tmp_path: Path, monkeypatch) -> None:
+    _load_runner_module("codex-agent")
+    native = sys.modules["pkg.native_cli"]
+    npm_root = tmp_path / "npm"
+    npm_shim = npm_root / "codex.cmd"
+    codex_js = npm_root / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+    codex_js.parent.mkdir(parents=True)
+    npm_shim.write_text("", encoding="utf-8")
+    codex_js.write_text("", encoding="utf-8")
+
+    def fake_which(command: str, *, path: str | None = None) -> str | None:
+        del path
+        if command == "codex.cmd":
+            return str(npm_shim)
+        if command == "node.exe":
+            return "C:/node.exe"
+        return None
+
+    monkeypatch.setattr(native.os, "name", "nt")
+    monkeypatch.setattr(native.shutil, "which", fake_which)
+
+    argv = native._resolve_local_codex_argv(
+        ["codex", "app-server", "--listen", "stdio://"],
+        {"PATH": "C:/fake"},
+    )
+
+    assert argv == ["C:/node.exe", str(codex_js), "app-server", "--listen", "stdio://"]
+
+
+def test_codex_file_change_approval_uses_cached_item_details() -> None:
+    _load_runner_module("codex-agent")
+    native = sys.modules["pkg.native_cli"]
+    request, continuation = native._interaction_from_codex_approval(
+        "item/fileChange/requestApproval",
+        {
+            "threadId": "thread-123",
+            "turnId": "turn-1",
+            "itemId": "patch-1",
+            "reason": "Update the requested configuration",
+        },
+        {
+            "id": "patch-1",
+            "type": "fileChange",
+            "changes": [
+                {"path": "config.yaml", "kind": {"type": "update"}},
+                {"path": "README.md", "kind": {"type": "update"}},
+            ],
+        },
+    )
+
+    assert request.kind == "confirmation"
+    assert "config.yaml" in str(request.description)
+    assert "README.md" in str(request.description)
+    assert continuation["approval_category"] == "file_change"
+    assert len(continuation["approval_fingerprint"]) == 64
 
 
 def test_codex_runner_non_streaming_emits_one_message(tmp_path: Path) -> None:

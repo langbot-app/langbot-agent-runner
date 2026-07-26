@@ -7,7 +7,7 @@
 ## ข้อมูลแพ็กเกจ
 
 - **Runner ID**: `plugin:langbot-team/CodexAgent/default`
-- **เวอร์ชัน**: `0.1.8`
+- **เวอร์ชัน**: `0.1.9`
 - **ที่เก็บโค้ด**: [https://github.com/langbot-app/langbot-agent-runner](https://github.com/langbot-app/langbot-agent-runner)
 
 ## ความสามารถหลัก
@@ -34,6 +34,8 @@
 | `timeout` | `integer` | ไม่ | `300` |
 | `streaming` | `boolean` | ไม่ | true |
 | `reuse-session` | `boolean` | ไม่ | true |
+| `approval-policy` | `select` | ไม่ | `untrusted` |
+| `sandbox-mode` | `select` | ไม่ | `inherit` |
 | `langbot-assets-enabled` | `boolean` | ไม่ | true |
 | `mcp-bridge-transport` | `select` | ไม่ | `auto` |
 | `mcp-servers-json` | `string` | ไม่ | `[]` |

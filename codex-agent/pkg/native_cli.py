@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -43,6 +44,15 @@ SUPPORTED_LOCATIONS = {"local", "remote-ssh", "daemon"}
 DEFAULT_TIMEOUT_SECONDS = 1800.0
 CODEX_STDIO_LIMIT_BYTES = 16 * 1024 * 1024
 logger = logging.getLogger(__name__)
+
+APPROVAL_METHOD_CATEGORIES = {
+    "item/commandExecution/requestApproval": "command",
+    "execCommandApproval": "command",
+    "item/fileChange/requestApproval": "file_change",
+    "applyPatchApproval": "file_change",
+}
+APPROVE_ONCE_ACTION = "approve_once"
+REJECT_ACTION = "reject"
 
 
 ASK_USER_QUESTION_TOOL = {
@@ -193,6 +203,21 @@ def _parse_config_args(value: typing.Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value]
     return _parse_args(value)
+
+
+def _resolve_local_codex_argv(argv: list[str], env: dict[str, str]) -> list[str]:
+    """Resolve bare `codex` to the npm CLI before Windows finds an unrelated exe."""
+    if os.name != "nt" or not argv or argv[0].lower() != "codex":
+        return argv
+    search_path = env.get("PATH") or os.environ.get("PATH")
+    npm_shim = shutil.which("codex.cmd", path=search_path)
+    if not npm_shim:
+        return argv
+    codex_js = Path(npm_shim).parent / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+    node = shutil.which("node.exe", path=search_path) or shutil.which("node", path=search_path)
+    if not codex_js.is_file() or not node:
+        return argv
+    return [node, str(codex_js), *argv[1:]]
 
 
 def _mcp_server_to_config(server: AgentMCPServerConfig) -> dict[str, typing.Any]:
@@ -498,6 +523,7 @@ def _interaction_from_questions(
     )
     continuation = {
         "version": 1,
+        "kind": "question",
         "interaction_id": request.interaction_id,
         "questions": continuation_questions,
     }
@@ -542,6 +568,128 @@ def _pending_interaction(ctx: AgentRunContext) -> dict[str, typing.Any] | None:
     return dict(value) if isinstance(value, dict) else None
 
 
+def _approval_item(params: dict[str, typing.Any], items: dict[str, dict[str, typing.Any]]) -> dict[str, typing.Any]:
+    item_id = str(params.get("itemId") or params.get("callId") or "")
+    item = items.get(item_id)
+    return dict(item) if isinstance(item, dict) else {}
+
+
+def _approval_evidence(
+    method: str,
+    params: dict[str, typing.Any],
+    item: dict[str, typing.Any],
+) -> tuple[str, dict[str, typing.Any]]:
+    category = APPROVAL_METHOD_CATEGORIES.get(method, "")
+    if category == "command":
+        command = params.get("command")
+        if command in (None, ""):
+            command = item.get("command")
+        cwd = params.get("cwd")
+        if cwd in (None, ""):
+            cwd = item.get("cwd")
+        evidence = {
+            "command": command,
+            "cwd": cwd,
+            "additional_permissions": params.get("additionalPermissions"),
+            "network_approval_context": params.get("networkApprovalContext"),
+        }
+    elif category == "file_change":
+        changes = params.get("fileChanges")
+        if changes in (None, ""):
+            changes = item.get("changes")
+        evidence = {
+            "changes": changes,
+            "grant_root": params.get("grantRoot"),
+        }
+    else:
+        raise NativeCliError(f"unsupported Codex approval method: {method}", code="codex.approval_invalid")
+    return category, evidence
+
+
+def _approval_fingerprint(category: str, evidence: dict[str, typing.Any]) -> str:
+    canonical = json.dumps(
+        {"category": category, "evidence": evidence},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _approval_summary(category: str, params: dict[str, typing.Any], evidence: dict[str, typing.Any]) -> str:
+    reason = _redact_secrets(str(params.get("reason") or "").strip())
+    lines: list[str] = []
+    if reason:
+        lines.append(f"Reason / 原因: {reason}")
+    if category == "command":
+        command = evidence.get("command")
+        if isinstance(command, list):
+            command_text = " ".join(str(part) for part in command)
+        else:
+            command_text = str(command or "")
+        if command_text:
+            lines.append(f"Command / 命令:\n{_redact_secrets(command_text)}")
+        if evidence.get("cwd"):
+            lines.append(f"Working directory / 工作目录: {evidence['cwd']}")
+    else:
+        changes = evidence.get("changes")
+        paths: list[str] = []
+        if isinstance(changes, dict):
+            paths = [str(path) for path in changes][:20]
+        elif isinstance(changes, list):
+            for change in changes[:20]:
+                if isinstance(change, dict):
+                    path = change.get("path") or change.get("filePath")
+                    if path:
+                        paths.append(str(path))
+        if paths:
+            lines.append("Files / 文件:\n" + "\n".join(f"- {path}" for path in paths))
+        if evidence.get("grant_root"):
+            lines.append(f"Write root / 写入目录: {evidence['grant_root']}")
+    if not lines:
+        lines.append("Codex requested permission to continue this operation. / Codex 请求授权以继续此操作。")
+    return "\n\n".join(lines)[:10000]
+
+
+def _interaction_from_codex_approval(
+    method: str,
+    params: dict[str, typing.Any],
+    item: dict[str, typing.Any],
+) -> tuple[InteractionRequest, dict[str, typing.Any]]:
+    category, evidence = _approval_evidence(method, params, item)
+    fingerprint = _approval_fingerprint(category, evidence)
+    summary = _approval_summary(category, params, evidence)
+    correlation_id = str(params.get("approvalId") or params.get("itemId") or params.get("callId") or uuid.uuid4().hex)
+    title = (
+        "Codex command approval / Codex 命令审批"
+        if category == "command"
+        else "Codex file change approval / Codex 文件修改审批"
+    )
+    request = InteractionRequest(
+        interaction_id=f"codex-approval-{correlation_id}"[:255],
+        kind="confirmation",
+        title=title,
+        description=summary,
+        actions=[
+            InteractionAction(id=APPROVE_ONCE_ACTION, label="Approve once / 批准一次", style="primary"),
+            InteractionAction(id=REJECT_ACTION, label="Reject / 拒绝", style="danger"),
+        ],
+        fallback_text=f"{title}\n\n{summary}\n\nReply approve or reject. / 回复批准或拒绝。",
+    )
+    continuation = {
+        "version": 1,
+        "kind": "approval",
+        "interaction_id": request.interaction_id,
+        "provider_method": method,
+        "thread_id": str(params.get("threadId") or params.get("conversationId") or ""),
+        "turn_id": str(params.get("turnId") or ""),
+        "approval_category": category,
+        "approval_fingerprint": fingerprint,
+        "approval_summary": summary,
+    }
+    return request, continuation
+
+
 def _interaction_resume_prompt(
     submission: InteractionSubmission,
     continuation: dict[str, typing.Any],
@@ -565,6 +713,35 @@ def _interaction_resume_prompt(
     )
 
 
+def _approval_resume(
+    submission: InteractionSubmission,
+    continuation: dict[str, typing.Any],
+) -> tuple[str, dict[str, str] | None]:
+    if submission.interaction_id != continuation.get("interaction_id"):
+        raise NativeCliError("interaction submission does not match the pending Codex approval", code="codex.interaction_mismatch")
+    action_id = str(submission.action_id or "")
+    summary = str(continuation.get("approval_summary") or "")
+    if action_id == APPROVE_ONCE_ACTION:
+        category = str(continuation.get("approval_category") or "")
+        fingerprint = str(continuation.get("approval_fingerprint") or "")
+        if not category or not fingerprint:
+            raise NativeCliError("pending Codex approval has no operation fingerprint", code="codex.approval_invalid")
+        prompt = (
+            "The user approved exactly one retry of the previously paused Codex operation. "
+            "Retry that same operation now. This approval does not authorize any different command or file change.\n"
+            + summary
+        )
+        return prompt, {"category": category, "fingerprint": fingerprint}
+    if action_id == REJECT_ACTION:
+        prompt = (
+            "The user rejected the previously paused Codex operation. Do not retry that exact operation. "
+            "Continue with a safe alternative or explain why the task cannot proceed.\n"
+            + summary
+        )
+        return prompt, None
+    raise NativeCliError(f"unsupported Codex approval action: {action_id}", code="codex.approval_invalid")
+
+
 class NativeCodexRunner(AgentRunner):
     def _validate_config(self, ctx: AgentRunContext) -> dict[str, typing.Any]:
         data = ctx.config or {}
@@ -578,6 +755,18 @@ class NativeCodexRunner(AgentRunner):
         daemon_id = str(data.get("daemon-id") or data.get("daemon_id") or "").strip()
         if location == "daemon" and not daemon_id:
             raise NativeCliError("daemon-id is required when location=daemon", code="codex.config_invalid")
+        approval_policy = str(data.get("approval-policy", "untrusted") or "untrusted").strip()
+        if approval_policy not in {"inherit", "untrusted", "on-request", "never"}:
+            raise NativeCliError(
+                "approval-policy must be inherit, untrusted, on-request, or never",
+                code="codex.config_invalid",
+            )
+        sandbox_mode = str(data.get("sandbox-mode", "inherit") or "inherit").strip()
+        if sandbox_mode not in {"inherit", "read-only", "workspace-write", "danger-full-access"}:
+            raise NativeCliError(
+                "sandbox-mode must be inherit, read-only, workspace-write, or danger-full-access",
+                code="codex.config_invalid",
+            )
         return {
             "location": location,
             "workspace": workspace,
@@ -591,6 +780,8 @@ class NativeCodexRunner(AgentRunner):
             "timeout": _to_float(data.get("timeout"), DEFAULT_TIMEOUT_SECONDS),
             "streaming": _to_bool(data.get("streaming"), True),
             "reuse_session": _to_bool(data.get("reuse-session"), True),
+            "approval_policy": None if approval_policy == "inherit" else approval_policy,
+            "sandbox_mode": None if sandbox_mode == "inherit" else sandbox_mode,
             "langbot_assets_enabled": _to_bool(data.get("langbot-assets-enabled"), True),
             "mcp_bridge_transport": str(data.get("mcp-bridge-transport", "auto") or "auto").strip(),
             "mcp_servers": _parse_json_list(data.get("mcp-servers-json"), label="mcp-servers-json"),
@@ -646,11 +837,15 @@ class NativeCodexRunner(AgentRunner):
         try:
             config = self._validate_config(ctx)
             submission = ctx.input.interaction
+            approval_grant: dict[str, str] | None = None
             if submission is not None:
                 continuation = _pending_interaction(ctx)
                 if continuation is None:
                     raise NativeCliError("pending Codex interaction state was not found", code="codex.interaction_not_found")
-                prompt = _interaction_resume_prompt(submission, continuation)
+                if continuation.get("kind") == "approval":
+                    prompt, approval_grant = _approval_resume(submission, continuation)
+                else:
+                    prompt = _interaction_resume_prompt(submission, continuation)
                 yield AgentRunResult.state_updated(
                     ctx.run_id,
                     PENDING_INTERACTION_STATE_KEY,
@@ -662,12 +857,32 @@ class NativeCodexRunner(AgentRunner):
                 if not prompt:
                     raise NativeCliError("input text is required", code="codex.empty_input")
 
+            approval_grant_holder = {"value": approval_grant}
+
             def run_turn(
                 turn_prompt: str, resume_session_id: str
             ) -> typing.AsyncGenerator[AgentRunResult, None]:
+                turn_approval_grant = approval_grant_holder["value"]
+                approval_grant_holder["value"] = None
                 if config["location"] == "daemon":
-                    return self._run_daemon(ctx, config, turn_prompt, resume_session_id)
-                return self._run_local_or_ssh(ctx, config, turn_prompt, resume_session_id)
+                    if turn_approval_grant is None:
+                        return self._run_daemon(ctx, config, turn_prompt, resume_session_id)
+                    return self._run_daemon(
+                        ctx,
+                        config,
+                        turn_prompt,
+                        resume_session_id,
+                        approval_grant=turn_approval_grant,
+                    )
+                if turn_approval_grant is None:
+                    return self._run_local_or_ssh(ctx, config, turn_prompt, resume_session_id)
+                return self._run_local_or_ssh(
+                    ctx,
+                    config,
+                    turn_prompt,
+                    resume_session_id,
+                    approval_grant=turn_approval_grant,
+                )
 
             async for result in run_with_steering(
                 ctx,
@@ -689,6 +904,8 @@ class NativeCodexRunner(AgentRunner):
         config: dict[str, typing.Any],
         prompt: str,
         session_id: str,
+        *,
+        approval_grant: dict[str, str] | None = None,
     ) -> typing.AsyncGenerator[AgentRunResult, None]:
         access = self._mcp_access(ctx, config)
         try:
@@ -696,6 +913,8 @@ class NativeCodexRunner(AgentRunner):
             mcp_toml = _mcp_config_toml(mcp_servers)
             argv = self._argv(config)
             env = {**os.environ, **config["env"]}
+            if config["location"] == "local":
+                argv = _resolve_local_codex_argv(argv, env)
             command = argv[0]
             args = argv[1:]
             cwd = config["workspace"] if config["location"] == "local" else None
@@ -732,6 +951,9 @@ class NativeCodexRunner(AgentRunner):
                 resume_session_id=session_id,
                 prompt=prompt,
                 agent_cwd=config["workspace"],
+                approval_policy=config["approval_policy"],
+                sandbox_mode=config["sandbox_mode"],
+                approval_grant=approval_grant,
                 initial_stdin=initial_stdin,
             ):
                 yield result
@@ -745,6 +967,8 @@ class NativeCodexRunner(AgentRunner):
         config: dict[str, typing.Any],
         prompt: str,
         session_id: str,
+        *,
+        approval_grant: dict[str, str] | None = None,
     ) -> typing.AsyncGenerator[AgentRunResult, None]:
         hub = get_agent_runtime_daemon_hub("codex", error_code_prefix="codex")
         if not hub.is_running:
@@ -766,9 +990,12 @@ class NativeCodexRunner(AgentRunner):
                 "env": config["env"],
                 "timeout": config["timeout"],
                 "streaming": config["streaming"],
+                "approval_policy": config["approval_policy"],
+                "sandbox_mode": config["sandbox_mode"],
                 "mcp_servers": config["mcp_servers"],
                 "langbot_assets_enabled": config["langbot_assets_enabled"],
             },
+            "approval_grant": approval_grant,
         }
         async for event in hub.run_job(
             daemon_id=config["daemon_id"],
@@ -797,6 +1024,7 @@ class NativeCodexDaemon(AgentRuntimeDaemonClient):
             argv = [*_parse_args(config.get("command") or "codex"), "app-server", "--listen", "stdio://", *list(config.get("args") or [])]
             session_id = str(payload.get("session_id") or "")
             env = {**os.environ, **{str(k): str(v) for k, v in dict(config.get("env") or {}).items()}}
+            argv = _resolve_local_codex_argv(argv, env)
             env, cwd = _prepare_local_codex_home(
                 str(config.get("workspace") or os.getcwd()),
                 session_id or str(payload.get("run_id") or job_id),
@@ -814,6 +1042,13 @@ class NativeCodexDaemon(AgentRuntimeDaemonClient):
                     resume_session_id=session_id,
                     prompt=str(payload.get("prompt") or ""),
                     agent_cwd=cwd,
+                    approval_policy=config.get("approval_policy"),
+                    sandbox_mode=config.get("sandbox_mode"),
+                    approval_grant=(
+                        dict(payload["approval_grant"])
+                        if isinstance(payload.get("approval_grant"), dict)
+                        else None
+                    ),
                     initial_stdin=b"",
                 ):
                     await self.emit_event(job_id, event)
@@ -842,6 +1077,9 @@ async def _run_cli_process(
     resume_session_id: str,
     prompt: str,
     agent_cwd: str,
+    approval_policy: str | None = None,
+    sandbox_mode: str | None = None,
+    approval_grant: dict[str, str] | None = None,
     initial_stdin: bytes = b"",
 ) -> typing.AsyncGenerator[AgentRunResult, None]:
     try:
@@ -855,6 +1093,9 @@ async def _run_cli_process(
             resume_session_id=resume_session_id,
             prompt=prompt,
             agent_cwd=agent_cwd,
+            approval_policy=approval_policy,
+            sandbox_mode=sandbox_mode,
+            approval_grant=approval_grant,
             initial_stdin=initial_stdin,
         ):
             event.setdefault("run_id", ctx.run_id)
@@ -889,7 +1130,13 @@ def _extract_thread_id(result: typing.Any) -> str:
 
 
 class _CodexAppServerClient:
-    def __init__(self, process: asyncio.subprocess.Process, *, streaming: bool) -> None:
+    def __init__(
+        self,
+        process: asyncio.subprocess.Process,
+        *,
+        streaming: bool,
+        approval_grant: dict[str, str] | None,
+    ) -> None:
         self.process = process
         self.streaming = streaming
         self.next_id = 0
@@ -905,6 +1152,8 @@ class _CodexAppServerClient:
         self.final_chunk_emitted = False
         self.interaction_request: InteractionRequest | None = None
         self.interaction_continuation: dict[str, typing.Any] | None = None
+        self.approval_grant = dict(approval_grant) if approval_grant else None
+        self.items: dict[str, dict[str, typing.Any]] = {}
 
     async def _write_json(self, payload: dict[str, typing.Any]) -> None:
         assert self.process.stdin is not None
@@ -936,14 +1185,21 @@ class _CodexAppServerClient:
                 "clientInfo": {
                     "name": "langbot-codex-agent",
                     "title": "LangBot Codex Agent",
-                "version": "0.1.8",
+                "version": "0.1.9",
                 },
                 "capabilities": {"experimentalApi": True},
             },
         )
         await self.notify("initialized")
 
-    async def start_or_resume_thread(self, resume_session_id: str, cwd: str) -> str:
+    async def start_or_resume_thread(
+        self,
+        resume_session_id: str,
+        cwd: str,
+        *,
+        approval_policy: str | None,
+        sandbox_mode: str | None,
+    ) -> str:
         if resume_session_id:
             try:
                 result = await self.request(
@@ -952,6 +1208,9 @@ class _CodexAppServerClient:
                         "threadId": resume_session_id,
                         "cwd": cwd,
                         "model": None,
+                        "approvalPolicy": approval_policy,
+                        "approvalsReviewer": "user" if approval_policy is not None else None,
+                        "sandbox": sandbox_mode,
                         "developerInstructions": None,
                     },
                 )
@@ -974,8 +1233,9 @@ class _CodexAppServerClient:
                 "modelProvider": None,
                 "profile": None,
                 "cwd": cwd,
-                "approvalPolicy": None,
-                "sandbox": None,
+                "approvalPolicy": approval_policy,
+                "approvalsReviewer": "user" if approval_policy is not None else None,
+                "sandbox": sandbox_mode,
                 "config": None,
                 "baseInstructions": None,
                 "developerInstructions": None,
@@ -1048,8 +1308,23 @@ class _CodexAppServerClient:
     async def handle_server_request(self, raw: dict[str, typing.Any]) -> None:
         request_id = raw.get("id")
         method = str(raw.get("method") or "")
-        if method in {"item/commandExecution/requestApproval", "execCommandApproval", "item/fileChange/requestApproval", "applyPatchApproval"}:
-            await self.respond(request_id, {"decision": "accept"})
+        if method in APPROVAL_METHOD_CATEGORIES:
+            params = raw.get("params")
+            if not isinstance(params, dict):
+                params = {}
+            item = _approval_item(params, self.items)
+            category, evidence = _approval_evidence(method, params, item)
+            fingerprint = _approval_fingerprint(category, evidence)
+            if self.approval_grant == {"category": category, "fingerprint": fingerprint}:
+                self.approval_grant = None
+                await self.respond(request_id, {"decision": "accept"})
+                return
+            request, continuation = _interaction_from_codex_approval(method, params, item)
+            self.interaction_request = request
+            self.interaction_continuation = continuation
+            await self.respond(request_id, {"decision": "cancel"})
+            await self._interrupt_turn(params)
+            self.finish_turn()
         elif method in {"item/tool/call", "item/tool/requestUserInput"}:
             params = raw.get("params")
             if not isinstance(params, dict):
@@ -1162,9 +1437,11 @@ class _CodexAppServerClient:
         item = params.get("item")
         if not isinstance(item, dict):
             return
+        item_id = str(item.get("id") or "")
+        if item_id:
+            self.items[item_id] = dict(item)
         item_type = str(item.get("type") or "")
         if method == "item/completed" and item_type == "agentMessage":
-            item_id = str(item.get("id") or "")
             if item_id and item_id in self.seen_agent_message_item_ids:
                 return
             if item_id:
@@ -1242,6 +1519,9 @@ async def _run_cli_process_events(
     resume_session_id: str,
     prompt: str,
     agent_cwd: str,
+    approval_policy: str | None = None,
+    sandbox_mode: str | None = None,
+    approval_grant: dict[str, str] | None = None,
     initial_stdin: bytes = b"",
 ) -> typing.AsyncGenerator[dict[str, typing.Any], None]:
     try:
@@ -1264,7 +1544,11 @@ async def _run_cli_process_events(
     assert process.stdout is not None
     assert process.stdin is not None
     assert process.stderr is not None
-    client = _CodexAppServerClient(process, streaming=streaming)
+    client = _CodexAppServerClient(
+        process,
+        streaming=streaming,
+        approval_grant=approval_grant,
+    )
     reader_task = asyncio.create_task(client.read_stdout())
     stderr_task = asyncio.create_task(process.stderr.read())
     result_sequence = 0
@@ -1274,7 +1558,12 @@ async def _run_cli_process_events(
             await process.stdin.drain()
         async with asyncio.timeout(timeout):
             await client.initialize()
-            thread_id = await client.start_or_resume_thread(resume_session_id, agent_cwd)
+            thread_id = await client.start_or_resume_thread(
+                resume_session_id,
+                agent_cwd,
+                approval_policy=approval_policy,
+                sandbox_mode=sandbox_mode,
+            )
             if thread_id and thread_id != resume_session_id:
                 result_sequence += 1
                 yield {

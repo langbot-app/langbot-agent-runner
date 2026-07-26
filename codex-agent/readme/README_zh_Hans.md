@@ -42,6 +42,8 @@ Codex Agent 通过 Codex app-server JSON-RPC 协议把 Codex CLI 接入 LangBot 
 | `timeout` | 运行超时秒数 |
 | `streaming` | 是否输出流式增量 |
 | `reuse-session` | 是否恢复 Codex thread |
+| `approval-policy` | Codex 原生命令和文件修改的审批策略 |
+| `sandbox-mode` | Codex 沙箱模式 |
 | `langbot-assets-enabled` | 是否注入 LangBot 授权资源 |
 | `mcp-bridge-transport` | MCP bridge 传输方式 |
 | `mcp-servers-json` | 额外 MCP server 配置 |

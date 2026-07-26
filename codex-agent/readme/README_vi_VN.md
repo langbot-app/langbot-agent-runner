@@ -7,7 +7,7 @@ Chạy Codex CLI dưới dạng LangBot AgentRunner.
 ## Thông tin gói
 
 - **Runner ID**: `plugin:langbot-team/CodexAgent/default`
-- **Phiên bản**: `0.1.8`
+- **Phiên bản**: `0.1.9`
 - **Kho mã nguồn**: [https://github.com/langbot-app/langbot-agent-runner](https://github.com/langbot-app/langbot-agent-runner)
 
 ## Khả năng chính
@@ -34,6 +34,8 @@ Chạy Codex CLI dưới dạng LangBot AgentRunner.
 | `timeout` | `integer` | Không | `300` |
 | `streaming` | `boolean` | Không | true |
 | `reuse-session` | `boolean` | Không | true |
+| `approval-policy` | `select` | Không | `untrusted` |
+| `sandbox-mode` | `select` | Không | `inherit` |
 | `langbot-assets-enabled` | `boolean` | Không | true |
 | `mcp-bridge-transport` | `select` | Không | `auto` |
 | `mcp-servers-json` | `string` | Không | `[]` |
