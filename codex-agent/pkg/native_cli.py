@@ -755,13 +755,13 @@ class NativeCodexRunner(AgentRunner):
         daemon_id = str(data.get("daemon-id") or data.get("daemon_id") or "").strip()
         if location == "daemon" and not daemon_id:
             raise NativeCliError("daemon-id is required when location=daemon", code="codex.config_invalid")
-        approval_policy = str(data.get("approval-policy", "untrusted") or "untrusted").strip()
+        approval_policy = str(data.get("approval-policy", "never") or "never").strip()
         if approval_policy not in {"inherit", "untrusted", "on-request", "never"}:
             raise NativeCliError(
                 "approval-policy must be inherit, untrusted, on-request, or never",
                 code="codex.config_invalid",
             )
-        sandbox_mode = str(data.get("sandbox-mode", "inherit") or "inherit").strip()
+        sandbox_mode = str(data.get("sandbox-mode", "danger-full-access") or "danger-full-access").strip()
         if sandbox_mode not in {"inherit", "read-only", "workspace-write", "danger-full-access"}:
             raise NativeCliError(
                 "sandbox-mode must be inherit, read-only, workspace-write, or danger-full-access",
@@ -1136,6 +1136,7 @@ class _CodexAppServerClient:
         *,
         streaming: bool,
         approval_grant: dict[str, str] | None,
+        approval_policy: str | None,
     ) -> None:
         self.process = process
         self.streaming = streaming
@@ -1153,6 +1154,7 @@ class _CodexAppServerClient:
         self.interaction_request: InteractionRequest | None = None
         self.interaction_continuation: dict[str, typing.Any] | None = None
         self.approval_grant = dict(approval_grant) if approval_grant else None
+        self.approval_policy = approval_policy
         self.items: dict[str, dict[str, typing.Any]] = {}
 
     async def _write_json(self, payload: dict[str, typing.Any]) -> None:
@@ -1308,7 +1310,21 @@ class _CodexAppServerClient:
     async def handle_server_request(self, raw: dict[str, typing.Any]) -> None:
         request_id = raw.get("id")
         method = str(raw.get("method") or "")
-        if method in APPROVAL_METHOD_CATEGORIES:
+        if method == "item/permissions/requestApproval":
+            params = raw.get("params")
+            requested = params.get("permissions") if isinstance(params, dict) else None
+            await self.respond(
+                request_id,
+                {
+                    "permissions": dict(requested) if isinstance(requested, dict) else {},
+                    "scope": "session",
+                    "strictAutoReview": False,
+                },
+            )
+        elif method in APPROVAL_METHOD_CATEGORIES:
+            if self.approval_policy == "never":
+                await self.respond(request_id, {"decision": "accept"})
+                return
             params = raw.get("params")
             if not isinstance(params, dict):
                 params = {}
@@ -1459,7 +1475,11 @@ class _CodexAppServerClient:
         duplicate = bool(self.final_parts and self.final_parts[-1] == text)
         if duplicate and not is_final:
             return
-        if not duplicate:
+        if is_final:
+            # Codex emits progress agentMessage items before the authoritative
+            # final_answer item. The final item replaces that progress text.
+            self.final_parts = [text]
+        elif not duplicate:
             self.final_parts.append(text)
         if not self.streaming:
             return
@@ -1467,7 +1487,7 @@ class _CodexAppServerClient:
         self.sequence += 1
         chunk = {
             "role": "assistant",
-            "content": all_content if is_final else text,
+            "content": text,
             "all_content": all_content,
             "msg_sequence": self.sequence,
         }
@@ -1548,6 +1568,7 @@ async def _run_cli_process_events(
         process,
         streaming=streaming,
         approval_grant=approval_grant,
+        approval_policy=approval_policy,
     )
     reader_task = asyncio.create_task(client.read_stdout())
     stderr_task = asyncio.create_task(process.stderr.read())

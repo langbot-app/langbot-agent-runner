@@ -42,6 +42,8 @@ Claude Code Agent 将 Claude Code CLI 以非交互模式接入 LangBot AgentRunn
 | `timeout` | 运行超时秒数 |
 | `streaming` | 是否输出流式增量 |
 | `reuse-session` | 是否复用 Claude Code session |
+| `dangerously-skip-permissions` | 是否传入 `--dangerously-skip-permissions` 跳过交互式权限审批；当前默认开启 |
+| `knowledge-bases` | 允许当前 runner 检索的 LangBot 知识库 |
 | `langbot-assets-enabled` | 是否注入 LangBot 授权资源 |
 | `mcp-bridge-transport` | MCP bridge 传输方式 |
 | `mcp-servers-json` | 额外 MCP server 配置 |
@@ -55,6 +57,7 @@ steering 当前只在 turn 之间注入，不会打断正在输出的 token；�
 ## 安全说明
 
 - 不要把 Claude 认证信息写入普通配置字段或命令参数。
+- 当前 LangBot 尚未提供交互式审批流程，因此默认跳过 Claude Code 权限审批。只应在可信工作区和受约束的系统账号下使用；如需恢复 Claude Code 的正常权限检查，请关闭 `dangerously-skip-permissions`。
 - SSH 私钥路径应限制文件权限。
 - daemon Hub 对外暴露时必须使用 token，并建议通过 TLS 反向代理提供服务。
 - Claude Code 获得的 LangBot 工具只限当前运行授权范围。

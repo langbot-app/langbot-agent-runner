@@ -32,6 +32,7 @@ Agent Client Protocol 対応のコーディングエージェントを LangBot A
 | `ssh-port` | `integer` | いいえ | `22` |
 | `ssh-identity-file` | `string` | いいえ | 空 |
 | `acp-command` | `string` | いいえ | 空 |
+| `knowledge-bases` | `knowledge-base-multi-selector` | いいえ | `[]` |
 | `langbot-assets-enabled` | `boolean` | いいえ | true |
 | `langbot-assets-mode` | `select` | いいえ | `auto` |
 | `langbot-assets-gateway-host` | `string` | いいえ | `127.0.0.1` |

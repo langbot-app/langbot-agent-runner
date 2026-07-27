@@ -21,6 +21,7 @@ import typing
 from langbot_plugin.api.agent_tools.daemon import AgentRuntimeDaemonClient, LocalMCPProxy
 from pkg.acp_client import AcpError, AcpStdioClient
 from pkg.prompt import acp_prompt_blocks, has_acp_prompt_input, prompt_capabilities
+from pkg.session import CLAUDE_ENV_VARS_TO_UNSET, build_session_params
 
 logger = logging.getLogger("langbot-acp-daemon")
 
@@ -94,6 +95,13 @@ def _agent_text_from_update(update: dict[str, typing.Any]) -> str:
     return ""
 
 
+def _agent_message_id(update: dict[str, typing.Any]) -> str:
+    payload = update.get("update") if isinstance(update.get("update"), dict) else update
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("messageId") or payload.get("message_id") or "")
+
+
 def _tool_update_payload(update: dict[str, typing.Any]) -> dict[str, typing.Any] | None:
     payload = update.get("update") if isinstance(update.get("update"), dict) else update
     if not isinstance(payload, dict):
@@ -102,6 +110,15 @@ def _tool_update_payload(update: dict[str, typing.Any]) -> dict[str, typing.Any]
     if "tool_call" not in update_kind:
         return None
     return payload
+
+
+def _tool_update_name(payload: dict[str, typing.Any]) -> str:
+    metadata = payload.get("_meta")
+    if isinstance(metadata, dict):
+        for value in metadata.values():
+            if isinstance(value, dict) and value.get("toolName"):
+                return str(value["toolName"])
+    return str(payload.get("name") or payload.get("title") or "acp_tool")
 
 
 def _result_event(result_type: str, data: dict[str, typing.Any], *, sequence: int | None = None) -> dict[str, typing.Any]:
@@ -139,6 +156,11 @@ class RunnerDaemon(AgentRuntimeDaemonClient):
                 args=command_args[1:],
                 cwd=str(config.get("cwd") or config.get("workspace") or os.getcwd()),
                 env={str(k): str(v) for k, v in dict(config.get("env") or {}).items()},
+                unset_env=(
+                    CLAUDE_ENV_VARS_TO_UNSET
+                    if str(config.get("provider") or "custom") == "claude-code"
+                    else ()
+                ),
                 permission_decision=str(config.get("permission_decision") or "allow_once"),
                 startup_timeout=float(config.get("startup_timeout") or 30.0),
             )
@@ -213,14 +235,24 @@ class RunnerDaemon(AgentRuntimeDaemonClient):
             if _runtime_has_method(capabilities, "session/resume"):
                 result = await client.request(
                     "session/resume",
-                    {"sessionId": stored_session_id, "cwd": cwd, "mcpServers": mcp_servers},
+                    build_session_params(
+                        provider=str(config.get("provider") or "custom"),
+                        session_id=stored_session_id,
+                        cwd=cwd,
+                        mcp_servers=mcp_servers,
+                    ),
                     timeout=timeout,
                 )
                 return _extract_session_id(result) or stored_session_id, False
             if _runtime_has_method(capabilities, "session/load"):
                 result = await client.request(
                     "session/load",
-                    {"sessionId": stored_session_id, "cwd": cwd, "mcpServers": mcp_servers},
+                    build_session_params(
+                        provider=str(config.get("provider") or "custom"),
+                        session_id=stored_session_id,
+                        cwd=cwd,
+                        mcp_servers=mcp_servers,
+                    ),
                     timeout=timeout,
                 )
                 await client.drain_updates()
@@ -229,7 +261,15 @@ class RunnerDaemon(AgentRuntimeDaemonClient):
         if not config.get("create_session_if_missing", True):
             raise AcpError("no stored ACP session and create-session-if-missing is disabled", code="acp.session_missing")
 
-        result = await client.request("session/new", {"mcpServers": mcp_servers, "cwd": cwd}, timeout=timeout)
+        result = await client.request(
+            "session/new",
+            build_session_params(
+                provider=str(config.get("provider") or "custom"),
+                cwd=cwd,
+                mcp_servers=mcp_servers,
+            ),
+            timeout=timeout,
+        )
         session_id = _extract_session_id(result)
         if not session_id:
             raise AcpError(f"ACP session/new did not return a session id: {result!r}", code="acp.response_invalid")
@@ -249,7 +289,8 @@ class RunnerDaemon(AgentRuntimeDaemonClient):
         )
         sequence = 0
         final_text_parts: list[str] = []
-        active_tool_calls: set[str] = set()
+        active_message_id = ""
+        active_tool_calls: dict[str, str] = {}
         timeout = float(config.get("timeout") or 300.0)
         deadline = time.monotonic() + timeout
         streaming = bool(config.get("streaming", True))
@@ -268,6 +309,11 @@ class RunnerDaemon(AgentRuntimeDaemonClient):
 
             text = _agent_text_from_update(update)
             if text:
+                message_id = _agent_message_id(update)
+                if message_id:
+                    if active_message_id and message_id != active_message_id:
+                        final_text_parts.clear()
+                    active_message_id = message_id
                 final_text_parts.append(text)
                 if streaming:
                     sequence += 1
@@ -310,13 +356,14 @@ class RunnerDaemon(AgentRuntimeDaemonClient):
         self,
         job_id: str,
         tool_payload: dict[str, typing.Any],
-        active_tool_calls: set[str],
+        active_tool_calls: dict[str, str],
     ) -> None:
         tool_call_id = str(tool_payload.get("toolCallId") or tool_payload.get("id") or "")
-        tool_name = str(tool_payload.get("title") or tool_payload.get("name") or "acp_tool")
+        observed_tool_name = _tool_update_name(tool_payload)
         status = str(tool_payload.get("status") or "")
         if tool_call_id and tool_call_id not in active_tool_calls:
-            active_tool_calls.add(tool_call_id)
+            active_tool_calls[tool_call_id] = observed_tool_name
+            tool_name = observed_tool_name
             await self.emit_event(
                 job_id,
                 _result_event(
@@ -325,6 +372,7 @@ class RunnerDaemon(AgentRuntimeDaemonClient):
                 ),
             )
         if tool_call_id and status in {"completed", "failed", "cancelled"}:
+            tool_name = active_tool_calls.get(tool_call_id, observed_tool_name)
             await self.emit_event(
                 job_id,
                 _result_event(

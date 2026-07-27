@@ -34,8 +34,9 @@ Chạy Codex CLI dưới dạng LangBot AgentRunner.
 | `timeout` | `integer` | Không | `300` |
 | `streaming` | `boolean` | Không | true |
 | `reuse-session` | `boolean` | Không | true |
-| `approval-policy` | `select` | Không | `untrusted` |
-| `sandbox-mode` | `select` | Không | `inherit` |
+| `approval-policy` | `select` | Không | `never` |
+| `sandbox-mode` | `select` | Không | `danger-full-access` |
+| `knowledge-bases` | `knowledge-base-multi-selector` | Không | `[]` |
 | `langbot-assets-enabled` | `boolean` | Không | true |
 | `mcp-bridge-transport` | `select` | Không | `auto` |
 | `mcp-servers-json` | `string` | Không | `[]` |
@@ -54,6 +55,7 @@ Chạy Codex CLI dưới dạng LangBot AgentRunner.
 
 ## Bảo mật và giới hạn
 
+- Cấu hình mặc định khởi động Codex với `approvalPolicy=never` và `sandbox=danger-full-access`, đồng thời không chờ phê duyệt tương tác. Chỉ sử dụng với không gian làm việc đáng tin cậy và tài khoản hệ điều hành bị giới hạn quyền.
 - Runner chỉ được dùng tài nguyên LangBot đã cấp quyền cho lần chạy hiện tại.
 - Tính sẵn sàng, khả năng mô hình và giới hạn tốc độ phụ thuộc vào dịch vụ bên ngoài.
 - Xem hành vi nâng cao và giới hạn riêng của sản phẩm trong README tiếng Trung ở thư mục gốc hoặc README_en_US.md tiếng Anh.

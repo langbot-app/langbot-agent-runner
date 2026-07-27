@@ -34,6 +34,8 @@ Chạy Claude Code CLI dưới dạng LangBot AgentRunner.
 | `timeout` | `integer` | Không | `300` |
 | `streaming` | `boolean` | Không | true |
 | `reuse-session` | `boolean` | Không | true |
+| `dangerously-skip-permissions` | `boolean` | Không | true |
+| `knowledge-bases` | `knowledge-base-multi-selector` | Không | `[]` |
 | `langbot-assets-enabled` | `boolean` | Không | true |
 | `mcp-bridge-transport` | `select` | Không | `auto` |
 | `mcp-servers-json` | `string` | Không | `[]` |
@@ -53,5 +55,6 @@ Chạy Claude Code CLI dưới dạng LangBot AgentRunner.
 ## Bảo mật và giới hạn
 
 - Runner chỉ được dùng tài nguyên LangBot đã cấp quyền cho lần chạy hiện tại.
+- Claude Code mặc định dùng `--dangerously-skip-permissions` vì LangBot chưa có luồng phê duyệt tương tác. Chỉ dùng với workspace đáng tin cậy và tài khoản hệ điều hành bị giới hạn; đặt thành false để khôi phục kiểm tra quyền thông thường.
 - Tính sẵn sàng, khả năng mô hình và giới hạn tốc độ phụ thuộc vào dịch vụ bên ngoài.
 - Xem hành vi nâng cao và giới hạn riêng của sản phẩm trong README tiếng Trung ở thư mục gốc hoặc README_en_US.md tiếng Anh.

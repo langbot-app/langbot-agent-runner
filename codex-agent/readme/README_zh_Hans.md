@@ -44,6 +44,7 @@ Codex Agent 通过 Codex app-server JSON-RPC 协议把 Codex CLI 接入 LangBot 
 | `reuse-session` | 是否恢复 Codex thread |
 | `approval-policy` | Codex 原生命令和文件修改的审批策略 |
 | `sandbox-mode` | Codex 沙箱模式 |
+| `knowledge-bases` | 允许当前 runner 检索的 LangBot 知识库 |
 | `langbot-assets-enabled` | 是否注入 LangBot 授权资源 |
 | `mcp-bridge-transport` | MCP bridge 传输方式 |
 | `mcp-servers-json` | 额外 MCP server 配置 |
@@ -58,6 +59,7 @@ runner 会在工作区下准备隔离的每次运行 `CODEX_HOME`，链接用户
 
 ## 安全说明
 
+- 默认配置以 `approvalPolicy=never` 和 `sandbox=danger-full-access` 启动 Codex，不会等待交互式审批。只能在可信工作区和权限受限的操作系统账号下使用该默认配置。
 - 不要把 Codex 认证信息放入普通配置或命令参数。
 - 工作区和隔离 `CODEX_HOME` 必须限制为运行用户可访问。
 - daemon Hub 对外暴露时必须配置共享 token 和 TLS。

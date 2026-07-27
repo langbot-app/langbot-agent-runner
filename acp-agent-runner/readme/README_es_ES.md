@@ -32,6 +32,7 @@ Ejecuta cualquier agente de programación compatible con Agent Client Protocol c
 | `ssh-port` | `integer` | No | `22` |
 | `ssh-identity-file` | `string` | No | Vacío |
 | `acp-command` | `string` | No | Vacío |
+| `knowledge-bases` | `knowledge-base-multi-selector` | No | `[]` |
 | `langbot-assets-enabled` | `boolean` | No | true |
 | `langbot-assets-mode` | `select` | No | `auto` |
 | `langbot-assets-gateway-host` | `string` | No | `127.0.0.1` |

@@ -465,6 +465,7 @@ class NativeClaudeCodeRunner(AgentRunner):
             "timeout": _to_float(data.get("timeout"), 300.0),
             "streaming": _to_bool(data.get("streaming"), True),
             "reuse_session": _to_bool(data.get("reuse-session"), True),
+            "dangerously_skip_permissions": _to_bool(data.get("dangerously-skip-permissions"), True),
             "langbot_assets_enabled": _to_bool(data.get("langbot-assets-enabled"), True),
             "mcp_bridge_transport": str(data.get("mcp-bridge-transport", "auto") or "auto").strip(),
             "mcp_servers": _parse_json_list(data.get("mcp-servers-json"), label="mcp-servers-json"),
@@ -493,6 +494,8 @@ class NativeClaudeCodeRunner(AgentRunner):
         resume: bool,
     ) -> list[str]:
         argv = [*_parse_args(config["command"]), *config["args"], "-p", "--verbose", "--output-format", "stream-json"]
+        if config.get("dangerously_skip_permissions", True) and "--dangerously-skip-permissions" not in argv:
+            argv.append("--dangerously-skip-permissions")
         argv.extend(["--allowedTools", "mcp__langbot_agent__ask_user_question"])
         if mcp_config_path:
             argv.extend(["--strict-mcp-config", "--mcp-config", mcp_config_path])
@@ -681,6 +684,7 @@ class NativeClaudeCodeRunner(AgentRunner):
                 "env": config["env"],
                 "timeout": config["timeout"],
                 "streaming": config["streaming"],
+                "dangerously_skip_permissions": config["dangerously_skip_permissions"],
                 "mcp_servers": config["mcp_servers"],
                 "langbot_assets_enabled": config["langbot_assets_enabled"],
             },
@@ -714,6 +718,8 @@ class NativeClaudeCodeDaemon(AgentRuntimeDaemonClient):
                 "--output-format",
                 "stream-json",
             ]
+            if config.get("dangerously_skip_permissions", True) and "--dangerously-skip-permissions" not in argv:
+                argv.append("--dangerously-skip-permissions")
             argv.extend(["--allowedTools", "mcp__langbot_agent__ask_user_question"])
             if mcp_config_path:
                 argv.extend(["--strict-mcp-config", "--mcp-config", mcp_config_path])
@@ -812,6 +818,7 @@ async def _run_cli_process_events(
     sequence = 0
     final_parts: list[str] = []
     pending_interaction: tuple[InteractionRequest, dict[str, typing.Any]] | None = None
+    terminal_result_text = ""
     stderr_task = asyncio.create_task(process.stderr.read())
     try:
         if initial_stdin:
@@ -844,6 +851,9 @@ async def _run_cli_process_events(
                 pending_interaction = _interaction_from_claude_tool(tool_use_id, tool_input)
                 continue
             chunk = _event_text(parsed)
+            if parsed.get("type") == "result" and chunk:
+                terminal_result_text = chunk
+                continue
             if chunk and pending_interaction is None:
                 final_parts.append(chunk)
                 if streaming:
@@ -882,11 +892,26 @@ async def _run_cli_process_events(
                 },
             }
             return
-        final_text = "".join(final_parts).strip()
+        final_text = (terminal_result_text or "".join(final_parts)).strip()
         if not final_text:
             raise NativeCliError("Claude Code returned no assistant text", code="claude_code.empty_response")
         final_message = {"role": "assistant", "content": final_text}
-        if not streaming:
+        if streaming:
+            sequence += 1
+            yield {
+                "type": "message.delta",
+                "sequence": sequence,
+                "data": {
+                    "chunk": {
+                        "role": "assistant",
+                        "content": final_text,
+                        "all_content": final_text,
+                        "is_final": True,
+                        "msg_sequence": sequence,
+                    }
+                },
+            }
+        else:
             yield {"type": "message.completed", "data": {"message": final_message}}
         yield {"type": "run.completed", "data": {"finish_reason": "stop"}}
     finally:

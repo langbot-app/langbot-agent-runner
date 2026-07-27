@@ -34,8 +34,9 @@
 | `timeout` | `integer` | 否 | `300` |
 | `streaming` | `boolean` | 否 | true |
 | `reuse-session` | `boolean` | 否 | true |
-| `approval-policy` | `select` | 否 | `untrusted` |
-| `sandbox-mode` | `select` | 否 | `inherit` |
+| `approval-policy` | `select` | 否 | `never` |
+| `sandbox-mode` | `select` | 否 | `danger-full-access` |
+| `knowledge-bases` | `knowledge-base-multi-selector` | 否 | `[]` |
 | `langbot-assets-enabled` | `boolean` | 否 | true |
 | `mcp-bridge-transport` | `select` | 否 | `auto` |
 | `mcp-servers-json` | `string` | 否 | `[]` |
@@ -54,6 +55,7 @@
 
 ## 安全與限制
 
+- 預設設定以 `approvalPolicy=never` 及 `sandbox=danger-full-access` 啟動 Codex，且不會等待互動式核准；請只在受信任的工作區與權限受限的作業系統帳號下使用此預設設定。
 - Runner 只能使用本次執行授權的 LangBot 資源。
 - 外部服務的可用性、模型能力與速率限制由對應平台決定。
 - 完整行為、進階設定與產品特定限制請參閱根目錄中文 README 或英文 README_en_US.md。

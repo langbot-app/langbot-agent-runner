@@ -5,7 +5,7 @@
 It is a thin runtime adapter:
 
 - LangBot remains the control plane.
-- The plugin starts an ACP server over stdio, such as `npx -y @zed-industries/codex-acp`, `npx -y @agentclientprotocol/claude-agent-acp`, `opencode acp`, or `npx -y @google/gemini-cli --acp`.
+- The plugin starts an ACP server over stdio, such as `npx -y @zed-industries/codex-acp`, `npx -y @agentclientprotocol/claude-agent-acp@0.62.0`, `opencode acp`, or `npx -y @google/gemini-cli --acp`.
 - In daemon mode, a user-side `langbot-runner-daemon` connects outward to the plugin and starts the ACP process on the user's machine.
 - The plugin speaks ACP JSON-RPC: `initialize`, `session/new`, `session/load` or `session/resume`, and `session/prompt`.
 - ACP `session/update` text chunks are streamed back to LangBot.
@@ -119,6 +119,7 @@ Useful options:
 - `acp-command`: optional command override. Required only for `provider=custom`.
 - `env-json`: JSON object merged into the process environment.
 - `reuse-session`: persists and reuses `external.acp_session_id` when the ACP agent supports `session/resume` or `session/load`.
+- `knowledge-bases`: selects the LangBot knowledge bases authorized for retrieval in this runner.
 - `langbot-assets-enabled`: injects the LangBot run-scoped MCP bridge into ACP `mcpServers`.
 - `langbot-assets-mode`: `auto`, `ephemeral`, or `gateway`. `auto` currently preserves the existing per-run bridge behavior; `gateway` registers the run in the SDK-owned long-lived HTTP MCP gateway.
 - `langbot-assets-gateway-port`: optional fixed port for `langbot-assets-mode=gateway`. Use a fixed port when another platform such as Dify needs to register the gateway URL.
@@ -176,7 +177,7 @@ process exits.
 | --- | --- | --- |
 | `auggie` | `npx -y @augmentcode/auggie --acp` | `loadSession` |
 | `autohand` | `npx -y @autohandai/autohand-acp` | `loadSession`, `session/resume` |
-| `claude-code` | `npx -y @agentclientprotocol/claude-agent-acp` | `loadSession`, `session/resume` |
+| `claude-code` | `npx -y @agentclientprotocol/claude-agent-acp@0.62.0` | `loadSession`, `session/resume` |
 | `codebuddy-code` | `npx -y @tencent-ai/codebuddy-code --acp` | `loadSession` |
 | `codex` | `npx -y @zed-industries/codex-acp` | `loadSession`, `session/resume` |
 | `deepagents` | `npx -y deepagents-acp` | `loadSession` |

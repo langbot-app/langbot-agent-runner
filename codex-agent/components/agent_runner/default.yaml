@@ -118,7 +118,7 @@ spec:
         zh_Hans: 审批策略
       type: select
       required: false
-      default: untrusted
+      default: never
       options:
         - name: on-request
           label:
@@ -142,7 +142,7 @@ spec:
         zh_Hans: 沙箱模式
       type: select
       required: false
-      default: inherit
+      default: danger-full-access
       options:
         - name: inherit
           label:
@@ -160,6 +160,13 @@ spec:
           label:
             en_US: Full Access
             zh_Hans: 完全访问
+    - name: knowledge-bases
+      label:
+        en_US: Knowledge Bases
+        zh_Hans: 知识库
+      type: knowledge-base-multi-selector
+      required: false
+      default: []
     - name: langbot-assets-enabled
       label:
         en_US: Enable LangBot Tools and Knowledge

@@ -34,8 +34,9 @@
 | `timeout` | `integer` | ไม่ | `300` |
 | `streaming` | `boolean` | ไม่ | true |
 | `reuse-session` | `boolean` | ไม่ | true |
-| `approval-policy` | `select` | ไม่ | `untrusted` |
-| `sandbox-mode` | `select` | ไม่ | `inherit` |
+| `approval-policy` | `select` | ไม่ | `never` |
+| `sandbox-mode` | `select` | ไม่ | `danger-full-access` |
+| `knowledge-bases` | `knowledge-base-multi-selector` | ไม่ | `[]` |
 | `langbot-assets-enabled` | `boolean` | ไม่ | true |
 | `mcp-bridge-transport` | `select` | ไม่ | `auto` |
 | `mcp-servers-json` | `string` | ไม่ | `[]` |
@@ -54,6 +55,7 @@
 
 ## ความปลอดภัยและข้อจำกัด
 
+- การกำหนดค่าเริ่มต้นเปิด Codex ด้วย `approvalPolicy=never` และ `sandbox=danger-full-access` และจะไม่รอการอนุมัติแบบโต้ตอบ โปรดใช้เฉพาะกับพื้นที่ทำงานที่เชื่อถือได้และบัญชีระบบปฏิบัติการที่จำกัดสิทธิ์
 - Runner ใช้ได้เฉพาะทรัพยากร LangBot ที่ได้รับอนุญาตสำหรับการทำงานปัจจุบัน
 - ความพร้อมใช้งาน ความสามารถของโมเดล และขีดจำกัดอัตราขึ้นอยู่กับบริการภายนอก
 - ดูพฤติกรรมขั้นสูงและข้อจำกัดเฉพาะผลิตภัณฑ์ใน README ภาษาจีนที่รากหรือ README_en_US.md ภาษาอังกฤษ

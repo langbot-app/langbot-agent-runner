@@ -112,6 +112,20 @@ spec:
       type: boolean
       required: false
       default: true
+    - name: dangerously-skip-permissions
+      label:
+        en_US: Skip Interactive Permissions
+        zh_Hans: 跳过交互式权限审批
+      type: boolean
+      required: false
+      default: true
+    - name: knowledge-bases
+      label:
+        en_US: Knowledge Bases
+        zh_Hans: 知识库
+      type: knowledge-base-multi-selector
+      required: false
+      default: []
     - name: langbot-assets-enabled
       label:
         en_US: Enable LangBot Tools and Knowledge

@@ -34,6 +34,8 @@
 | `timeout` | `integer` | ไม่ | `300` |
 | `streaming` | `boolean` | ไม่ | true |
 | `reuse-session` | `boolean` | ไม่ | true |
+| `dangerously-skip-permissions` | `boolean` | ไม่ | true |
+| `knowledge-bases` | `knowledge-base-multi-selector` | ไม่ | `[]` |
 | `langbot-assets-enabled` | `boolean` | ไม่ | true |
 | `mcp-bridge-transport` | `select` | ไม่ | `auto` |
 | `mcp-servers-json` | `string` | ไม่ | `[]` |
@@ -53,5 +55,6 @@
 ## ความปลอดภัยและข้อจำกัด
 
 - Runner ใช้ได้เฉพาะทรัพยากร LangBot ที่ได้รับอนุญาตสำหรับการทำงานปัจจุบัน
+- Claude Code ใช้ `--dangerously-skip-permissions` เป็นค่าเริ่มต้น เพราะ LangBot ยังไม่มีขั้นตอนอนุมัติแบบโต้ตอบ ใช้เฉพาะกับ workspace ที่เชื่อถือได้และบัญชีระบบที่ถูกจำกัด หรือกำหนดเป็น false เพื่อคืนค่าการตรวจสอบสิทธิ์ตามปกติ
 - ความพร้อมใช้งาน ความสามารถของโมเดล และขีดจำกัดอัตราขึ้นอยู่กับบริการภายนอก
 - ดูพฤติกรรมขั้นสูงและข้อจำกัดเฉพาะผลิตภัณฑ์ใน README ภาษาจีนที่รากหรือ README_en_US.md ภาษาอังกฤษ

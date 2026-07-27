@@ -32,6 +32,7 @@ Chạy tác nhân lập trình tương thích Agent Client Protocol dưới dạ
 | `ssh-port` | `integer` | Không | `22` |
 | `ssh-identity-file` | `string` | Không | Trống |
 | `acp-command` | `string` | Không | Trống |
+| `knowledge-bases` | `knowledge-base-multi-selector` | Không | `[]` |
 | `langbot-assets-enabled` | `boolean` | Không | true |
 | `langbot-assets-mode` | `select` | Không | `auto` |
 | `langbot-assets-gateway-host` | `string` | Không | `127.0.0.1` |

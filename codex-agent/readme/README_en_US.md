@@ -34,8 +34,9 @@ Run Codex CLI as a LangBot AgentRunner.
 | `timeout` | `integer` | No | `1800` |
 | `streaming` | `boolean` | No | true |
 | `reuse-session` | `boolean` | No | true |
-| `approval-policy` | `select` | No | `untrusted` |
-| `sandbox-mode` | `select` | No | `inherit` |
+| `approval-policy` | `select` | No | `never` |
+| `sandbox-mode` | `select` | No | `danger-full-access` |
+| `knowledge-bases` | `knowledge-base-multi-selector` | No | `[]` |
 | `langbot-assets-enabled` | `boolean` | No | true |
 | `mcp-bridge-transport` | `select` | No | `auto` |
 | `mcp-servers-json` | `string` | No | `[]` |
@@ -54,6 +55,7 @@ Run Codex CLI as a LangBot AgentRunner.
 
 ## Security and limitations
 
+- The default configuration starts Codex with `approvalPolicy=never` and `sandbox=danger-full-access` and does not wait for interactive approval. Use the default only with trusted workspaces and a constrained operating-system account.
 - The runner can use only LangBot resources authorized for the current run.
 - Availability, model abilities, and rate limits depend on the external service.
 - See the full Chinese README at the package root for advanced behavior and product-specific limitations.

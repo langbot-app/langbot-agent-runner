@@ -34,6 +34,8 @@ Run Claude Code CLI as a LangBot AgentRunner.
 | `timeout` | `integer` | No | `300` |
 | `streaming` | `boolean` | No | true |
 | `reuse-session` | `boolean` | No | true |
+| `dangerously-skip-permissions` | `boolean` | No | true |
+| `knowledge-bases` | `knowledge-base-multi-selector` | No | `[]` |
 | `langbot-assets-enabled` | `boolean` | No | true |
 | `mcp-bridge-transport` | `select` | No | `auto` |
 | `mcp-servers-json` | `string` | No | `[]` |
@@ -53,8 +55,9 @@ Run Claude Code CLI as a LangBot AgentRunner.
 ## Security and limitations
 
 - The runner can use only LangBot resources authorized for the current run.
+- By default, Claude Code runs with `--dangerously-skip-permissions` because LangBot does not yet expose an interactive approval flow. Use it only with trusted workspaces and a constrained operating-system account. Set `dangerously-skip-permissions` to false to restore Claude Code's normal permission checks.
 - Availability, model abilities, and rate limits depend on the external service.
-- See the full Chinese README at the package root for advanced behavior and product-specific limitations.
+- See the localized README files under `readme/` for translated guidance.
 
 - Follow-ups are injected between turns, not mid-token.
 - Follow-up turns currently carry text only; attachments on follow-ups are not

@@ -58,6 +58,7 @@ ACP Agent Runner 用于把兼容 Agent Client Protocol（ACP）的编码 Agent �
 | `streaming` | `boolean` | `true` | 是否输出流式增量 |
 | `env-json` | `text` | `{}` | 传给 ACP 进程的环境变量 JSON |
 | `mcp-servers-json` | `text` | `{}` | 额外 MCP server 配置 |
+| `knowledge-bases` | `knowledge-base-multi-selector` | `[]` | 允许当前 runner 检索的 LangBot 知识库 |
 | `langbot-assets-enabled` | `boolean` | `true` | 是否提供 LangBot 授权资产 |
 | `langbot-assets-mode` | `select` | 自动 | 使用 stdio/代理或网关模式 |
 

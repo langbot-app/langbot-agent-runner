@@ -53,6 +53,7 @@ SUPPORTED_FORM_TYPES = {
     "boolean",
     "integer",
     "json",
+    "knowledge-base-multi-selector",
     "number",
     "secret",
     "select",
@@ -183,6 +184,19 @@ def test_bridge_runners_declare_bridge_related_capabilities() -> None:
     assert acp_runner["spec"]["capabilities"]["knowledge_retrieval"] is True
     assert acp_runner["spec"]["capabilities"]["multimodal_input"] is True
 
+    for plugin_dir in ("acp-agent-runner", "claude-code-agent", "codex-agent"):
+        runner = _load_yaml(ROOT / plugin_dir / "components" / "agent_runner" / "default.yaml")
+        config = {item["name"]: item for item in runner["spec"]["config"]}
+        assert runner["spec"]["capabilities"]["knowledge_retrieval"] is True
+        assert runner["spec"]["permissions"]["knowledge_bases"] == ["retrieve"]
+        assert config["knowledge-bases"] == {
+            "name": "knowledge-bases",
+            "label": {"en_US": "Knowledge Bases", "zh_Hans": "知识库"},
+            "type": "knowledge-base-multi-selector",
+            "required": False,
+            "default": [],
+        }
+
     dify_runner = _load_yaml(ROOT / "dify-agent" / "components" / "agent_runner" / "default.yaml")
     assert dify_runner["spec"]["permissions"] == {
         "tools": ["detail", "call"],
@@ -227,6 +241,9 @@ def test_acp_provider_presets_match_runner_config() -> None:
     option_names = {option["name"] for option in provider_config["options"]}
 
     assert option_names == set(module.DEFAULT_PROVIDER_COMMANDS) | {"custom"}
+    assert module.DEFAULT_PROVIDER_COMMANDS["claude-code"] == (
+        "npx -y @agentclientprotocol/claude-agent-acp@0.62.0"
+    )
     assert module.DEFAULT_PROVIDER_COMMANDS["codex"] == "npx -y @zed-industries/codex-acp"
     assert module.DEFAULT_PROVIDER_COMMANDS["qwen-code"] == "npx -y @qwen-code/qwen-code --acp --experimental-skills"
     assert module.DEFAULT_PROVIDER_COMMANDS["opencode"] == "opencode acp"
@@ -389,6 +406,292 @@ def test_acp_runner_validates_daemon_location_config() -> None:
         raise AssertionError("daemon-id should be required when location=daemon")
 
 
+def test_acp_claude_sessions_only_load_explicit_mcp_servers() -> None:
+    module = _load_runner_module("acp-agent-runner")
+    runner = object.__new__(module.DefaultAgentRunner)
+    mcp_servers = [
+        {
+            "name": "langbot_agent",
+            "type": "stdio",
+            "command": "python",
+            "args": ["-m", "langbot_plugin.api.agent_tools.mcp_stdio"],
+            "env": [{"name": "LANGBOT_AGENT_MCP_ENDPOINT", "value": "http://127.0.0.1:12345"}],
+        }
+    ]
+    base_config = {
+        "provider": "claude-code",
+        "session_cwd": "/workspace",
+        "timeout": 10.0,
+        "reuse_session": True,
+        "create_session_if_missing": True,
+    }
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def request(self, method, params, *, timeout):
+            self.requests.append((method, params, timeout))
+            return {"sessionId": params.get("sessionId") or "new-session"}
+
+        async def drain_updates(self):
+            return None
+
+    async def exercise():
+        calls = []
+        scenarios = [
+            ({}, ""),
+            ({"sessionCapabilities": {"resume": True}}, "resume-session"),
+            ({"loadSession": True}, "load-session"),
+        ]
+        for capabilities, stored_session_id in scenarios:
+            client = FakeClient()
+            await runner._create_or_resume_session(
+                client,
+                {"agentCapabilities": capabilities},
+                object(),
+                base_config,
+                mcp_servers,
+                stored_session_id,
+            )
+            calls.extend(client.requests)
+        return calls
+
+    calls = asyncio.run(exercise())
+
+    assert [method for method, _, _ in calls] == ["session/new", "session/resume", "session/load"]
+    for _, params, timeout in calls:
+        assert params["cwd"] == "/workspace"
+        assert params["mcpServers"] == []
+        assert params["_meta"] == {
+            "claudeCode": {
+                "options": {
+                    "strictMcpConfig": True,
+                    "mcpServers": {
+                        "langbot_agent": {
+                            "type": "stdio",
+                            "command": "python",
+                            "args": ["-m", "langbot_plugin.api.agent_tools.mcp_stdio"],
+                            "env": {"LANGBOT_AGENT_MCP_ENDPOINT": "http://127.0.0.1:12345"},
+                            "alwaysLoad": True,
+                        }
+                    },
+                    "tools": ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "Agent"],
+                }
+            }
+        }
+        assert timeout == 10.0
+
+
+def test_acp_non_claude_sessions_keep_provider_mcp_behavior() -> None:
+    module = _load_plugin_module("acp-agent-runner", "pkg/session.py", "session")
+
+    params = module.build_session_params(
+        provider="codex",
+        session_id="session-1",
+        cwd="/workspace",
+        mcp_servers=[],
+    )
+
+    assert params == {
+        "sessionId": "session-1",
+        "cwd": "/workspace",
+        "mcpServers": [],
+    }
+
+
+def test_acp_client_closes_spawned_process_group(tmp_path: Path) -> None:
+    if os.name == "nt":
+        return
+
+    module = _load_plugin_module("acp-agent-runner", "pkg/acp_client.py", "acp_client_process_group")
+    child_pid_path = tmp_path / "child.pid"
+    script = tmp_path / "process_tree.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import subprocess",
+                "import sys",
+                "import time",
+                "from pathlib import Path",
+                "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])",
+                f"Path({str(child_pid_path)!r}).write_text(str(child.pid), encoding='utf-8')",
+                "time.sleep(60)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    async def exercise():
+        client = module.AcpStdioClient(command=sys.executable, args=[str(script)])
+        await client.start()
+        for _ in range(100):
+            if child_pid_path.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert child_pid_path.exists()
+        parent_pid = client.process.pid
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        await client.close()
+        return parent_pid, child_pid
+
+    parent_pid, child_pid = asyncio.run(exercise())
+
+    for pid in (parent_pid, child_pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        raise AssertionError(f"ACP process {pid} survived client.close()")
+
+
+def test_acp_client_unsets_child_environment(tmp_path: Path, monkeypatch) -> None:
+    module = _load_plugin_module("acp-agent-runner", "pkg/acp_client.py", "acp_client_unset_env")
+    output_path = tmp_path / "env.txt"
+    script = tmp_path / "print_env.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import os",
+                "from pathlib import Path",
+                f"Path({str(output_path)!r}).write_text(",
+                "    os.environ.get('CLAUDE_CODE_COORDINATOR_MODE', 'missing'),",
+                "    encoding='utf-8',",
+                ")",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_CODE_COORDINATOR_MODE", "1")
+
+    async def exercise():
+        client = module.AcpStdioClient(
+            command=sys.executable,
+            args=[str(script)],
+            env={"CLAUDE_CODE_COORDINATOR_MODE": "1"},
+            unset_env=["CLAUDE_CODE_COORDINATOR_MODE"],
+        )
+        await client.start()
+        await client.process.wait()
+        await client.close()
+
+    asyncio.run(exercise())
+
+    assert output_path.read_text(encoding="utf-8") == "missing"
+
+
+def test_acp_remote_shell_unsets_claude_coordination_modes() -> None:
+    module = _load_runner_module("acp-agent-runner")
+
+    command = module._remote_shell_command(
+        remote_shell="bash",
+        workspace="/workspace",
+        acp_command="npx -y @agentclientprotocol/claude-agent-acp",
+        unset_env=module.CLAUDE_ENV_VARS_TO_UNSET,
+    )
+
+    assert "env -u CLAUDE_CODE_COORDINATOR_MODE -u ENABLE_TOOL_SEARCH" in command
+
+
+class _CompletedAcpRequest:
+    def __init__(self) -> None:
+        self.future = asyncio.get_running_loop().create_future()
+        self.future.set_result({"stopReason": "end_turn"})
+
+    async def wait(self, timeout=None):
+        return self.future.result()
+
+
+class _QueuedAcpClient:
+    def __init__(self, updates):
+        self.updates = list(updates)
+
+    def send_request(self, method, params):
+        assert method == "session/prompt"
+        return _CompletedAcpRequest()
+
+    def next_update_nowait(self):
+        return self.updates.pop(0) if self.updates else None
+
+
+def _acp_message_update(message_id: str, text: str) -> dict:
+    return {
+        "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": message_id,
+            "content": {"type": "text", "text": text},
+        }
+    }
+
+
+def test_acp_runner_uses_latest_agent_message_as_final_answer() -> None:
+    module = _load_runner_module("acp-agent-runner")
+    runner = object.__new__(module.DefaultAgentRunner)
+    client = _QueuedAcpClient(
+        [
+            _acp_message_update("message-1", "Working"),
+            _acp_message_update("message-1", "..."),
+            _acp_message_update("message-2", "FINAL_ONLY"),
+        ]
+    )
+
+    async def exercise():
+        results = []
+        async for result in runner._stream_prompt_results(
+            client,
+            types.SimpleNamespace(run_id="run-1"),
+            "session-1",
+            [{"type": "text", "text": "test"}],
+            timeout=1.0,
+            streaming=True,
+        ):
+            results.append(result)
+        return results
+
+    results = asyncio.run(exercise())
+    deltas = [result.data["chunk"] for result in results if result.type == "message.delta"]
+
+    assert [chunk["all_content"] for chunk in deltas] == ["Working", "Working...", "FINAL_ONLY"]
+    assert results[-2].type == "message.completed"
+    assert results[-2].data["message"]["content"] == "FINAL_ONLY"
+    assert results[-1].type == "run.completed"
+
+
+def test_acp_daemon_uses_latest_agent_message_as_final_answer() -> None:
+    module = _load_plugin_module("acp-agent-runner", "daemon.py", "daemon_message_boundaries")
+    daemon = object.__new__(module.RunnerDaemon)
+    events = []
+
+    async def fake_emit(job_id, event):
+        events.append(event)
+
+    daemon.emit_event = fake_emit
+    client = _QueuedAcpClient(
+        [
+            _acp_message_update("message-1", "Working"),
+            _acp_message_update("message-2", "FINAL_ONLY"),
+        ]
+    )
+
+    asyncio.run(
+        daemon._stream_prompt_results(
+            client,
+            "job-1",
+            "session-1",
+            [{"type": "text", "text": "test"}],
+            {"timeout": 1.0, "streaming": True},
+        )
+    )
+
+    deltas = [event["data"]["chunk"] for event in events if event["type"] == "message.delta"]
+    assert [chunk["all_content"] for chunk in deltas] == ["Working", "FINAL_ONLY"]
+    assert events[-2] == {
+        "type": "message.completed",
+        "data": {"message": {"role": "assistant", "content": "FINAL_ONLY"}},
+    }
+    assert events[-1] == {"type": "run.completed", "data": {"finish_reason": "stop"}}
+
+
 def test_acp_daemon_tool_events_match_agent_run_result_schema() -> None:
     import asyncio
 
@@ -407,7 +710,7 @@ def test_acp_daemon_tool_events_match_agent_run_result_schema() -> None:
         daemon._emit_tool_update(
             "job-1",
             {"toolCallId": "tool-1", "name": "read_file", "status": "pending"},
-            set(),
+            {},
         )
     )
 
@@ -428,6 +731,49 @@ def test_acp_daemon_tool_events_match_agent_run_result_schema() -> None:
     event = dict(events[0][1])
     event["run_id"] = "run-1"
     AgentRunResult.model_validate(event)
+
+
+def test_acp_daemon_tool_events_keep_stable_name_across_updates() -> None:
+    module = _load_plugin_module("acp-agent-runner", "daemon.py", "daemon")
+    daemon = object.__new__(module.RunnerDaemon)
+    events = []
+
+    async def fake_emit(job_id, event):
+        events.append((job_id, event))
+
+    daemon.emit_event = fake_emit
+    active_tool_calls = {}
+
+    async def emit_lifecycle() -> None:
+        await daemon._emit_tool_update(
+            "job-1",
+            {
+                "_meta": {"claudeCode": {"toolName": "Read"}},
+                "toolCallId": "tool-1",
+                "title": "Read TASK.md",
+                "status": "pending",
+            },
+            active_tool_calls,
+        )
+        await daemon._emit_tool_update(
+            "job-1",
+            {
+                "_meta": {"claudeCode": {"toolName": "Read"}},
+                "toolCallId": "tool-1",
+                "status": "completed",
+                "rawOutput": "contents",
+            },
+            active_tool_calls,
+        )
+
+    asyncio.run(emit_lifecycle())
+
+    assert [event[1]["type"] for event in events] == [
+        "tool.call.started",
+        "tool.call.completed",
+    ]
+    assert [event[1]["data"]["tool_name"] for event in events] == ["Read", "Read"]
+    assert active_tool_calls == {"tool-1": "Read"}
 
 
 def test_acp_runner_uses_sdk_mcp_bridge_helper(monkeypatch) -> None:
@@ -733,7 +1079,11 @@ def _write_fake_codex_app_server(path: Path) -> None:
                 "        thread_id = params.get('threadId') or thread_id",
                 "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'threadId': thread_id}})",
                 "    elif request_id is not None and method == 'thread/start':",
-                "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'threadId': thread_id}})",
+                "        approval_pair = (params.get('approvalPolicy'), params.get('sandbox'))",
+                "        if approval_pair not in {('never', 'danger-full-access'), ('on-request', 'read-only')}:",
+                "            send({'jsonrpc': '2.0', 'id': request_id, 'error': {'code': -32602, 'message': 'interactive approval is not disabled'}})",
+                "        else:",
+                "            send({'jsonrpc': '2.0', 'id': request_id, 'result': {'threadId': thread_id}})",
                 "    elif request_id is not None and method == 'turn/start':",
                 "        prompt = params.get('input', [{}])[0].get('text', '')",
                 "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {}})",
@@ -749,6 +1099,11 @@ def _write_fake_codex_app_server(path: Path) -> None:
                 "            continue",
                 "        if 'ASK_INTERACTION' in prompt:",
                 "            send({'jsonrpc': '2.0', 'id': 700, 'method': 'item/tool/call', 'params': {'threadId': thread_id, 'turnId': 'turn-1', 'callId': 'call-question-1', 'tool': 'ask_user_question', 'arguments': {'title': 'Need details', 'questions': [{'id': 'environment', 'question': 'Choose an environment', 'options': [{'label': 'staging', 'value': 'staging'}, {'label': 'production', 'value': 'production'}]}]}}})",
+                "            continue",
+                "        if 'INTERMEDIATE_THEN_FINAL' in prompt:",
+                "            send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'progress-1', 'type': 'agentMessage', 'text': 'working...', 'phase': 'commentary'}}})",
+                "            send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'final-1', 'type': 'agentMessage', 'text': 'FINAL_ONLY', 'phase': 'final_answer'}}})",
+                "            send({'jsonrpc': '2.0', 'method': 'turn/completed', 'params': {'threadId': thread_id, 'turn': {'id': 'turn-1', 'status': 'completed'}}})",
                 "            continue",
                 "        send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'item-1', 'type': 'agentMessage', 'text': 'FAKE_CODEX_APP_SERVER_OK:' + prompt, 'phase': 'final_answer'}}})",
                 "        send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'threadId': thread_id, 'item': {'id': 'item-1', 'type': 'agentMessage', 'text': 'FAKE_CODEX_APP_SERVER_OK:' + prompt, 'phase': 'final_answer'}}})",
@@ -782,11 +1137,75 @@ def test_claude_code_runner_executes_fake_native_cli(tmp_path: Path) -> None:
     assert [item.type for item in results] == [
         "state.updated",
         "message.delta",
+        "message.delta",
         "run.completed",
     ]
     assert results[1].data["chunk"]["content"] == "FAKE_NATIVE_OK:hello native"
-    assert "message" not in results[2].data
+    assert results[2].data["chunk"]["content"] == "FAKE_NATIVE_OK:hello native"
+    assert results[2].data["chunk"]["is_final"] is True
+    assert "message" not in results[3].data
     assert results[0].data["key"] == "external.claude_code_session_id"
+
+
+def test_claude_code_runner_defaults_to_non_interactive_permissions(tmp_path: Path) -> None:
+    module = _load_runner_module("claude-code-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+
+    config = runner._validate_config(
+        _native_ctx(
+            {
+                "location": "local",
+                "workspace": str(tmp_path),
+                "langbot-assets-enabled": False,
+            }
+        )
+    )
+
+    assert config["dangerously_skip_permissions"] is True
+    argv = runner._argv(config, session_id="session-1", mcp_config_path="", resume=False)
+    assert argv.count("--dangerously-skip-permissions") == 1
+
+
+def test_claude_code_runner_can_restore_interactive_permissions(tmp_path: Path) -> None:
+    module = _load_runner_module("claude-code-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+
+    config = runner._validate_config(
+        _native_ctx(
+            {
+                "location": "local",
+                "workspace": str(tmp_path),
+                "dangerously-skip-permissions": False,
+                "langbot-assets-enabled": False,
+            }
+        )
+    )
+
+    assert config["dangerously_skip_permissions"] is False
+    argv = runner._argv(config, session_id="session-1", mcp_config_path="", resume=False)
+    assert "--dangerously-skip-permissions" not in argv
+
+
+def test_claude_code_runner_resumes_an_existing_session(tmp_path: Path) -> None:
+    module = _load_runner_module("claude-code-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    config = runner._validate_config(
+        _native_ctx(
+            {
+                "location": "local",
+                "workspace": str(tmp_path),
+                "langbot-assets-enabled": False,
+            }
+        )
+    )
+
+    argv = runner._argv(config, session_id="session-1", mcp_config_path="", resume=True)
+
+    assert argv[argv.index("--resume") + 1] == "session-1"
+    assert "--session-id" not in argv
 
 
 def test_claude_code_runner_passes_mcp_config_by_temp_file(tmp_path: Path) -> None:
@@ -819,10 +1238,48 @@ def test_claude_code_runner_passes_mcp_config_by_temp_file(tmp_path: Path) -> No
     assert [item.type for item in results] == [
         "state.updated",
         "message.delta",
+        "message.delta",
         "run.completed",
     ]
     assert results[1].data["chunk"]["content"] == "FAKE_NATIVE_OK:hello native"
-    assert "message" not in results[2].data
+    assert results[2].data["chunk"]["content"] == "FAKE_NATIVE_OK:hello native"
+    assert results[2].data["chunk"]["is_final"] is True
+    assert "message" not in results[3].data
+
+
+def test_claude_code_runner_uses_terminal_result_as_clean_final_text(tmp_path: Path) -> None:
+    fake_cli = tmp_path / "fake_claude_result.py"
+    fake_cli.write_text(
+        "\n".join(
+            [
+                "import json",
+                "print(json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'working...'}]}}))",
+                "print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'FINAL_ONLY'}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    module = _load_runner_module("claude-code-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    runner.get_run_api = lambda ctx: None
+    ctx = _native_ctx(
+        {
+            "location": "local",
+            "command": sys.executable,
+            "args-json": [str(fake_cli)],
+            "workspace": str(tmp_path),
+            "langbot-assets-enabled": False,
+        }
+    )
+
+    results = asyncio.run(_collect_async(runner.run(ctx)))
+
+    deltas = [item.data["chunk"] for item in results if item.type == "message.delta"]
+    assert [chunk["content"] for chunk in deltas] == ["working...", "FINAL_ONLY"]
+    assert deltas[-1]["all_content"] == "FINAL_ONLY"
+    assert deltas[-1]["is_final"] is True
+    assert results[-1].type == "run.completed"
 
 
 def test_claude_code_runner_non_streaming_emits_one_message(tmp_path: Path) -> None:
@@ -944,6 +1401,51 @@ def test_codex_runner_executes_fake_native_cli(tmp_path: Path) -> None:
     assert [item.sequence for item in results] == [1, 2, 3]
 
 
+def test_codex_runner_final_answer_replaces_intermediate_text(tmp_path: Path) -> None:
+    fake_cli = tmp_path / "fake_codex_app_server.py"
+    _write_fake_codex_app_server(fake_cli)
+    module = _load_runner_module("codex-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+    runner.get_run_api = lambda ctx: None
+    ctx = _native_ctx(
+        {
+            "location": "local",
+            "command": f"{sys.executable} {fake_cli}",
+            "workspace": str(tmp_path),
+            "langbot-assets-enabled": False,
+        },
+        text="INTERMEDIATE_THEN_FINAL",
+    )
+
+    results = asyncio.run(_collect_async(runner.run(ctx)))
+
+    deltas = [item.data["chunk"] for item in results if item.type == "message.delta"]
+    assert [chunk["content"] for chunk in deltas] == ["working...", "FINAL_ONLY"]
+    assert deltas[-1]["all_content"] == "FINAL_ONLY"
+    assert deltas[-1]["is_final"] is True
+    assert results[-1].type == "run.completed"
+
+
+def test_codex_runner_defaults_to_non_interactive_full_access(tmp_path: Path) -> None:
+    module = _load_runner_module("codex-agent")
+    runner = object.__new__(module.DefaultAgentRunner)
+    runner.get_plugin_config = lambda: {}
+
+    config = runner._validate_config(
+        _native_ctx(
+            {
+                "location": "local",
+                "workspace": str(tmp_path),
+                "langbot-assets-enabled": False,
+            }
+        )
+    )
+
+    assert config["approval_policy"] == "never"
+    assert config["sandbox_mode"] == "danger-full-access"
+
+
 def test_codex_runner_pauses_for_dynamic_question_and_resumes_thread(tmp_path: Path) -> None:
     fake_cli = tmp_path / "fake_codex_app_server.py"
     _write_fake_codex_app_server(fake_cli)
@@ -957,6 +1459,8 @@ def test_codex_runner_pauses_for_dynamic_question_and_resumes_thread(tmp_path: P
         "command": f"{sys.executable} {fake_cli}",
         "workspace": str(tmp_path),
         "langbot-assets-enabled": False,
+        "approval-policy": "on-request",
+        "sandbox-mode": "read-only",
     }
 
     paused = asyncio.run(_collect_async(runner.run(_native_ctx(config, text="ASK_INTERACTION"))))
@@ -1067,6 +1571,8 @@ def test_codex_runner_resumes_after_native_approval_rejection(tmp_path: Path) ->
         "command": f"{sys.executable} {fake_cli}",
         "workspace": str(tmp_path),
         "langbot-assets-enabled": False,
+        "approval-policy": "on-request",
+        "sandbox-mode": "read-only",
     }
     paused = asyncio.run(_collect_async(runner.run(_native_ctx(config, text="TRIGGER_COMMAND_APPROVAL"))))
     pending = paused[1].data["value"]
@@ -1134,6 +1640,7 @@ def test_codex_runner_resolves_bare_windows_command_to_npm_cli(tmp_path: Path, m
         return None
 
     monkeypatch.setattr(native.os, "name", "nt")
+    monkeypatch.setattr(native, "Path", type(tmp_path))
     monkeypatch.setattr(native.shutil, "which", fake_which)
 
     argv = native._resolve_local_codex_argv(
@@ -1199,6 +1706,96 @@ def test_codex_runner_non_streaming_emits_one_message(tmp_path: Path) -> None:
     assert results[1].data["message"]["content"] == "FAKE_CODEX_APP_SERVER_OK:hello native"
     assert "message" not in results[2].data
     assert [item.sequence for item in results] == [1, 2, 3]
+
+
+def test_codex_app_server_auto_approves_permission_profile() -> None:
+    module = _load_plugin_module("codex-agent", "pkg/native_cli.py", "native_cli_permissions")
+
+    class CaptureStdin:
+        def __init__(self) -> None:
+            self.data = bytearray()
+
+        def write(self, data: bytes) -> None:
+            self.data.extend(data)
+
+        async def drain(self) -> None:
+            return None
+
+    async def approve() -> dict:
+        stdin = CaptureStdin()
+        process = types.SimpleNamespace(stdin=stdin)
+        client = module._CodexAppServerClient(
+            process,
+            streaming=True,
+            approval_grant=None,
+            approval_policy="never",
+        )
+        requested = {
+            "fileSystem": {"read": ["/tmp/input"], "write": ["/tmp/output"]},
+            "network": {"enabled": True},
+        }
+        await client.handle_server_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 41,
+                "method": "item/permissions/requestApproval",
+                "params": {"permissions": requested},
+            }
+        )
+        return json.loads(stdin.data.decode("utf-8"))
+
+    response = asyncio.run(approve())
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 41,
+        "result": {
+            "permissions": {
+                "fileSystem": {"read": ["/tmp/input"], "write": ["/tmp/output"]},
+                "network": {"enabled": True},
+            },
+            "scope": "session",
+            "strictAutoReview": False,
+        },
+    }
+
+
+def test_codex_app_server_auto_approves_legacy_request_when_policy_is_never() -> None:
+    module = _load_plugin_module("codex-agent", "pkg/native_cli.py", "native_cli_legacy_approval")
+
+    class CaptureStdin:
+        def __init__(self) -> None:
+            self.data = bytearray()
+
+        def write(self, data: bytes) -> None:
+            self.data.extend(data)
+
+        async def drain(self) -> None:
+            return None
+
+    async def approve() -> tuple[dict, object]:
+        stdin = CaptureStdin()
+        process = types.SimpleNamespace(stdin=stdin)
+        client = module._CodexAppServerClient(
+            process,
+            streaming=True,
+            approval_grant=None,
+            approval_policy="never",
+        )
+        await client.handle_server_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 42,
+                "method": "item/commandExecution/requestApproval",
+                "params": {"command": "touch probe.txt", "cwd": "/workspace"},
+            }
+        )
+        return json.loads(stdin.data.decode("utf-8")), client.interaction_request
+
+    response, interaction_request = asyncio.run(approve())
+
+    assert response == {"jsonrpc": "2.0", "id": 42, "result": {"decision": "accept"}}
+    assert interaction_request is None
 
 
 def test_codex_local_home_is_unique_per_resumed_run(tmp_path: Path) -> None:
@@ -1548,7 +2145,8 @@ def test_acp_resource_summary_includes_run_scoped_bridge_tools() -> None:
 
     prompt = object.__new__(module.DefaultAgentRunner)._with_run_scope_prompt(ctx, "call langbot_get_current_event")
     assert "Call LangBot MCP tools directly in this ACP session" in prompt
-    assert "do not launch background agents, subagents, or tasks" in prompt
+    assert "Do not launch background agents, workflows, or tasks" in prompt
+    assert "launch at most one Agent with run_in_background=false and wait for it to finish" in prompt
     assert "Wait for each LangBot MCP tool result before replying" in prompt
 
 

@@ -32,6 +32,7 @@
 | `ssh-port` | `integer` | 否 | `22` |
 | `ssh-identity-file` | `string` | 否 | 空 |
 | `acp-command` | `string` | 否 | 空 |
+| `knowledge-bases` | `knowledge-base-multi-selector` | 否 | `[]` |
 | `langbot-assets-enabled` | `boolean` | 否 | true |
 | `langbot-assets-mode` | `select` | 否 | `auto` |
 | `langbot-assets-gateway-host` | `string` | 否 | `127.0.0.1` |

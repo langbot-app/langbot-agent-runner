@@ -32,6 +32,7 @@
 | `ssh-port` | `integer` | Нет | `22` |
 | `ssh-identity-file` | `string` | Нет | Пусто |
 | `acp-command` | `string` | Нет | Пусто |
+| `knowledge-bases` | `knowledge-base-multi-selector` | Нет | `[]` |
 | `langbot-assets-enabled` | `boolean` | Нет | true |
 | `langbot-assets-mode` | `select` | Нет | `auto` |
 | `langbot-assets-gateway-host` | `string` | Нет | `127.0.0.1` |

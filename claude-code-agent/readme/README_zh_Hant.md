@@ -34,6 +34,8 @@
 | `timeout` | `integer` | 否 | `300` |
 | `streaming` | `boolean` | 否 | true |
 | `reuse-session` | `boolean` | 否 | true |
+| `dangerously-skip-permissions` | `boolean` | 否 | true |
+| `knowledge-bases` | `knowledge-base-multi-selector` | 否 | `[]` |
 | `langbot-assets-enabled` | `boolean` | 否 | true |
 | `mcp-bridge-transport` | `select` | 否 | `auto` |
 | `mcp-servers-json` | `string` | 否 | `[]` |
@@ -53,5 +55,6 @@
 ## 安全與限制
 
 - Runner 只能使用本次執行授權的 LangBot 資源。
+- LangBot 尚未提供互動式審批流程，因此 Claude Code 預設使用 `--dangerously-skip-permissions`。請只在可信工作區及受限制的系統帳號下使用；設為 false 可恢復 Claude Code 的正常權限檢查。
 - 外部服務的可用性、模型能力與速率限制由對應平台決定。
 - 完整行為、進階設定與產品特定限制請參閱根目錄中文 README 或英文 README_en_US.md。

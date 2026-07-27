@@ -32,6 +32,7 @@
 | `ssh-port` | `integer` | ไม่ | `22` |
 | `ssh-identity-file` | `string` | ไม่ | ว่าง |
 | `acp-command` | `string` | ไม่ | ว่าง |
+| `knowledge-bases` | `knowledge-base-multi-selector` | ไม่ | `[]` |
 | `langbot-assets-enabled` | `boolean` | ไม่ | true |
 | `langbot-assets-mode` | `select` | ไม่ | `auto` |
 | `langbot-assets-gateway-host` | `string` | ไม่ | `127.0.0.1` |

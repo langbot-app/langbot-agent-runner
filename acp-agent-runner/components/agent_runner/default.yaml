@@ -365,6 +365,13 @@ spec:
       type: boolean
       required: false
       default: true
+    - name: knowledge-bases
+      label:
+        en_US: Knowledge Bases
+        zh_Hans: 知识库
+      type: knowledge-base-multi-selector
+      required: false
+      default: []
     - name: append-run-scope-prompt
       label:
         en_US: Append Run Scope Prompt

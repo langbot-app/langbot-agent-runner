@@ -34,6 +34,8 @@
 | `timeout` | `integer` | Нет | `300` |
 | `streaming` | `boolean` | Нет | true |
 | `reuse-session` | `boolean` | Нет | true |
+| `dangerously-skip-permissions` | `boolean` | Нет | true |
+| `knowledge-bases` | `knowledge-base-multi-selector` | Нет | `[]` |
 | `langbot-assets-enabled` | `boolean` | Нет | true |
 | `mcp-bridge-transport` | `select` | Нет | `auto` |
 | `mcp-servers-json` | `string` | Нет | `[]` |
@@ -53,5 +55,6 @@
 ## Безопасность и ограничения
 
 - Runner использует только ресурсы LangBot, разрешённые для текущего запуска.
+- По умолчанию Claude Code запускается с `--dangerously-skip-permissions`, поскольку в LangBot пока нет интерактивного подтверждения. Используйте этот режим только в доверенном рабочем каталоге и под ограниченной системной учётной записью; задайте false, чтобы вернуть обычную проверку разрешений.
 - Доступность, возможности моделей и лимиты запросов зависят от внешнего сервиса.
 - Расширенное поведение и ограничения продукта описаны в китайском README в корне и английском README_en_US.md.

@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import re
+import signal
 import typing
 
 _AUTH_ASSIGNMENT_RE = re.compile(r"(?i)(\bAuthorization\b[\"']?\s*[:=]\s*[\"']?)(?:Bearer\s+)?[^\"'\s,}\]]+")
@@ -78,6 +79,7 @@ class AcpStdioClient:
         args: list[str] | None = None,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
+        unset_env: typing.Sequence[str] | None = None,
         permission_decision: str = "allow_once",
         startup_timeout: float = 30.0,
         stderr_limit: int = 20000,
@@ -86,6 +88,7 @@ class AcpStdioClient:
         self.args = list(args or [])
         self.cwd = cwd
         self.env = dict(env or {})
+        self.unset_env = tuple(str(name) for name in (unset_env or ()))
         self.permission_decision = permission_decision
         self.startup_timeout = startup_timeout
         self.stderr_limit = stderr_limit
@@ -120,6 +123,8 @@ class AcpStdioClient:
 
         process_env = os.environ.copy()
         process_env.update(self.env)
+        for name in self.unset_env:
+            process_env.pop(name, None)
 
         try:
             self.process = await asyncio.wait_for(
@@ -131,6 +136,7 @@ class AcpStdioClient:
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    start_new_session=os.name != "nt",
                 ),
                 timeout=self.startup_timeout,
             )
@@ -160,19 +166,48 @@ class AcpStdioClient:
         self._pending.clear()
 
         process = self.process
-        if process is not None and process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=5)
-            except TimeoutError:
-                process.kill()
-                await process.wait()
+        if process is not None:
+            if os.name == "nt":
+                if process.returncode is None:
+                    process.terminate()
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=5)
+                    except TimeoutError:
+                        process.kill()
+                        await process.wait()
+            else:
+                await self._close_posix_process_group(process)
 
         for task in (self._reader_task, self._stderr_task):
             if task is not None:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+
+    async def _close_posix_process_group(self, process: asyncio.subprocess.Process) -> None:
+        process_group_id = process.pid
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process_group_id, signal.SIGTERM)
+
+        if not await self._wait_for_process_group_exit(process_group_id, timeout=5):
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process_group_id, signal.SIGKILL)
+            await self._wait_for_process_group_exit(process_group_id, timeout=1)
+
+        if process.returncode is None:
+            await process.wait()
+
+    async def _wait_for_process_group_exit(self, process_group_id: int, *, timeout: float) -> bool:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            try:
+                os.killpg(process_group_id, 0)
+            except ProcessLookupError:
+                return True
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(0.05)
 
     async def initialize(self, timeout: float | None = None) -> dict[str, typing.Any]:
         result = await self.request(

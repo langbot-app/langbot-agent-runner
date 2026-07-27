@@ -34,8 +34,9 @@
 | `timeout` | `integer` | Нет | `300` |
 | `streaming` | `boolean` | Нет | true |
 | `reuse-session` | `boolean` | Нет | true |
-| `approval-policy` | `select` | Нет | `untrusted` |
-| `sandbox-mode` | `select` | Нет | `inherit` |
+| `approval-policy` | `select` | Нет | `never` |
+| `sandbox-mode` | `select` | Нет | `danger-full-access` |
+| `knowledge-bases` | `knowledge-base-multi-selector` | Нет | `[]` |
 | `langbot-assets-enabled` | `boolean` | Нет | true |
 | `mcp-bridge-transport` | `select` | Нет | `auto` |
 | `mcp-servers-json` | `string` | Нет | `[]` |
@@ -54,6 +55,7 @@
 
 ## Безопасность и ограничения
 
+- Конфигурация по умолчанию запускает Codex с `approvalPolicy=never` и `sandbox=danger-full-access` и не ожидает интерактивного подтверждения. Используйте её только с доверенными рабочими каталогами и учётной записью ОС с ограниченными правами.
 - Runner использует только ресурсы LangBot, разрешённые для текущего запуска.
 - Доступность, возможности моделей и лимиты запросов зависят от внешнего сервиса.
 - Расширенное поведение и ограничения продукта описаны в китайском README в корне и английском README_en_US.md.

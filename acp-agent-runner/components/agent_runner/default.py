@@ -26,18 +26,19 @@ from langbot_plugin.api.entities.builtin.agent_runner import (
 from langbot_plugin.api.entities.builtin.provider.message import Message, MessageChunk
 from pkg.acp_client import AcpError, AcpStdioClient
 from pkg.prompt import acp_prompt_blocks, has_acp_prompt_input, prompt_capabilities
+from pkg.session import CLAUDE_ENV_VARS_TO_UNSET, build_session_params
 from pkg.steering import run_with_steering
 
 logger = logging.getLogger(__name__)
 
 ACP_SESSION_STATE_KEY = "external.acp_session_id"
 # Common ACP agent launch presets from the public ACP registry and vendor docs.
-# Keep commands unpinned so the default follows the locally installed/current
-# CLI; set acp-command to pin a version or use a non-standard install path.
+# Pin adapters when runner behavior depends on a specific ACP lifecycle fix;
+# set acp-command to use a different tested version or install path.
 DEFAULT_PROVIDER_COMMANDS = {
     "auggie": "npx -y @augmentcode/auggie --acp",
     "autohand": "npx -y @autohandai/autohand-acp",
-    "claude-code": "npx -y @agentclientprotocol/claude-agent-acp",
+    "claude-code": "npx -y @agentclientprotocol/claude-agent-acp@0.62.0",
     "codebuddy-code": "npx -y @tencent-ai/codebuddy-code --acp",
     "codex": "npx -y @zed-industries/codex-acp",
     "deepagents": "npx -y deepagents-acp",
@@ -151,12 +152,23 @@ def _powershell_quote(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def _remote_shell_command(*, remote_shell: str, workspace: str, acp_command: str) -> str:
+def _remote_shell_command(
+    *,
+    remote_shell: str,
+    workspace: str,
+    acp_command: str,
+    unset_env: typing.Sequence[str] = (),
+) -> str:
     if remote_shell == "none":
-        return acp_command
+        unset_prefix = " ".join(f"-u {_posix_quote(name)}" for name in unset_env)
+        return f"env {unset_prefix} {acp_command}" if unset_prefix else acp_command
 
     if remote_shell == "powershell":
         script_parts = ["$ErrorActionPreference='Stop'"]
+        script_parts.extend(
+            f"Remove-Item Env:{name} -ErrorAction SilentlyContinue"
+            for name in unset_env
+        )
         if workspace:
             quoted_workspace = _powershell_quote(workspace)
             script_parts.append(f"New-Item -ItemType Directory -Force -Path {quoted_workspace} | Out-Null")
@@ -169,7 +181,9 @@ def _remote_shell_command(*, remote_shell: str, workspace: str, acp_command: str
         quoted_workspace = _posix_quote(workspace)
         script_parts.append(f"mkdir -p {quoted_workspace}")
         script_parts.append(f"cd {quoted_workspace}")
-    script_parts.append(f"exec {acp_command}")
+    unset_prefix = " ".join(f"-u {_posix_quote(name)}" for name in unset_env)
+    command = f"env {unset_prefix} {acp_command}" if unset_prefix else acp_command
+    script_parts.append(f"exec {command}")
     return f"bash -lc {_posix_quote(' && '.join(script_parts))}"
 
 
@@ -265,6 +279,13 @@ def _agent_text_from_update(update: dict[str, typing.Any]) -> str:
     return ""
 
 
+def _agent_message_id(update: dict[str, typing.Any]) -> str:
+    payload = update.get("update") if isinstance(update.get("update"), dict) else update
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("messageId") or payload.get("message_id") or "")
+
+
 def _tool_update_payload(update: dict[str, typing.Any]) -> dict[str, typing.Any] | None:
     payload = update.get("update") if isinstance(update.get("update"), dict) else update
     if not isinstance(payload, dict):
@@ -273,6 +294,15 @@ def _tool_update_payload(update: dict[str, typing.Any]) -> dict[str, typing.Any]
     if "tool_call" not in update_kind:
         return None
     return payload
+
+
+def _tool_update_name(payload: dict[str, typing.Any]) -> str:
+    metadata = payload.get("_meta")
+    if isinstance(metadata, dict):
+        for value in metadata.values():
+            if isinstance(value, dict) and value.get("toolName"):
+                return str(value["toolName"])
+    return str(payload.get("name") or payload.get("title") or "acp_tool")
 
 
 def _mcp_env_to_acp(env: typing.Any) -> list[dict[str, str]]:
@@ -430,7 +460,9 @@ class DefaultAgentRunner(AgentRunner):
             "System instructions from LangBot:\n"
             f"- Current LangBot run_id: {ctx.run_id}\n"
             "- The injected LangBot MCP server is already scoped to this run. Follow its tool schemas exactly.\n"
-            "- Call LangBot MCP tools directly in this ACP session; do not launch background agents, subagents, or tasks to call them.\n"
+            "- Call LangBot MCP tools directly in this ACP session when possible.\n"
+            "- Do not launch background agents, workflows, or tasks. If this model can only call MCP tools through an Agent, "
+            "launch at most one Agent with run_in_background=false and wait for it to finish.\n"
             "- Wait for each LangBot MCP tool result before replying to the user.\n"
             "- Do not add run_id or other fields to MCP tool calls unless the tool schema asks for them.\n"
             "- If a LangBot MCP call is rejected, stop and report the error.\n"
@@ -495,6 +527,7 @@ class DefaultAgentRunner(AgentRunner):
         return access, servers
 
     def _launch_config(self, config: dict[str, typing.Any], access: AgentRunMCPAccess | None) -> dict[str, typing.Any]:
+        unset_env = CLAUDE_ENV_VARS_TO_UNSET if config["provider"] == "claude-code" else ()
         if config["location"] == "local":
             argv = _parse_args(config["acp_command"])
             if not argv:
@@ -503,6 +536,7 @@ class DefaultAgentRunner(AgentRunner):
                 "command": argv[0],
                 "args": argv[1:],
                 "cwd": config["cwd"],
+                "unset_env": unset_env,
             }
 
         ssh_args = [
@@ -529,12 +563,14 @@ class DefaultAgentRunner(AgentRunner):
                 remote_shell=config["remote_shell"],
                 workspace=config["workspace"],
                 acp_command=config["acp_command"],
+                unset_env=unset_env,
             )
         )
         return {
             "command": "ssh",
             "args": ssh_args,
             "cwd": None,
+            "unset_env": unset_env,
         }
 
     async def _create_or_resume_session(
@@ -554,22 +590,24 @@ class DefaultAgentRunner(AgentRunner):
             if _runtime_has_method(capabilities, "session/resume"):
                 result = await client.request(
                     "session/resume",
-                    {
-                        "sessionId": stored_session_id,
-                        "cwd": config["session_cwd"],
-                        "mcpServers": mcp_servers,
-                    },
+                    build_session_params(
+                        provider=config["provider"],
+                        session_id=stored_session_id,
+                        cwd=config["session_cwd"],
+                        mcp_servers=mcp_servers,
+                    ),
                     timeout=config["timeout"],
                 )
                 return _extract_session_id(result) or stored_session_id, False
             if _runtime_has_method(capabilities, "session/load"):
                 result = await client.request(
                     "session/load",
-                    {
-                        "sessionId": stored_session_id,
-                        "cwd": config["session_cwd"],
-                        "mcpServers": mcp_servers,
-                    },
+                    build_session_params(
+                        provider=config["provider"],
+                        session_id=stored_session_id,
+                        cwd=config["session_cwd"],
+                        mcp_servers=mcp_servers,
+                    ),
                     timeout=config["timeout"],
                 )
                 await client.drain_updates()
@@ -580,10 +618,11 @@ class DefaultAgentRunner(AgentRunner):
 
         result = await client.request(
             "session/new",
-            {
-                "mcpServers": mcp_servers,
-                "cwd": config["session_cwd"],
-            },
+            build_session_params(
+                provider=config["provider"],
+                cwd=config["session_cwd"],
+                mcp_servers=mcp_servers,
+            ),
             timeout=config["timeout"],
         )
         session_id = _extract_session_id(result)
@@ -611,7 +650,8 @@ class DefaultAgentRunner(AgentRunner):
 
         sequence = 0
         final_text_parts: list[str] = []
-        active_tool_calls: set[str] = set()
+        active_message_id = ""
+        active_tool_calls: dict[str, str] = {}
         deadline = time.monotonic() + timeout
 
         while True:
@@ -628,6 +668,11 @@ class DefaultAgentRunner(AgentRunner):
 
             text = _agent_text_from_update(update)
             if text:
+                message_id = _agent_message_id(update)
+                if message_id:
+                    if active_message_id and message_id != active_message_id:
+                        final_text_parts.clear()
+                    active_message_id = message_id
                 final_text_parts.append(text)
                 if streaming:
                     sequence += 1
@@ -644,12 +689,14 @@ class DefaultAgentRunner(AgentRunner):
             tool_payload = _tool_update_payload(update)
             if tool_payload:
                 tool_call_id = str(tool_payload.get("toolCallId") or tool_payload.get("id") or "")
-                tool_name = str(tool_payload.get("title") or tool_payload.get("name") or "acp_tool")
+                observed_tool_name = _tool_update_name(tool_payload)
                 status = str(tool_payload.get("status") or "")
                 if tool_call_id and tool_call_id not in active_tool_calls:
-                    active_tool_calls.add(tool_call_id)
+                    active_tool_calls[tool_call_id] = observed_tool_name
+                    tool_name = observed_tool_name
                     yield AgentRunResult.tool_call_started(ctx.run_id, tool_call_id, tool_name, {})
                 if tool_call_id and status in {"completed", "failed", "cancelled"}:
+                    tool_name = active_tool_calls.get(tool_call_id, observed_tool_name)
                     yield AgentRunResult.tool_call_completed(
                         ctx.run_id,
                         tool_call_id,
@@ -805,6 +852,7 @@ class DefaultAgentRunner(AgentRunner):
                 args=launch_config["args"],
                 cwd=launch_config["cwd"],
                 env=config["env"],
+                unset_env=launch_config["unset_env"],
                 permission_decision=config["permission_decision"],
                 startup_timeout=config["startup_timeout"],
             )
