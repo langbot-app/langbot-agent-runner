@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import sys
 import tomllib
 import types
@@ -593,6 +594,24 @@ def test_acp_remote_shell_unsets_claude_coordination_modes() -> None:
     assert "env -u CLAUDE_CODE_COORDINATOR_MODE -u ENABLE_TOOL_SEARCH" in command
 
 
+def test_acp_remote_shell_applies_configured_environment_after_login_shell() -> None:
+    module = _load_runner_module("acp-agent-runner")
+
+    command = module._remote_shell_command(
+        remote_shell="bash",
+        workspace="/workspace",
+        acp_command="npx -y @agentclientprotocol/claude-agent-acp",
+        env={"HTTP_PROXY": "", "LANGBOT_TEST_VALUE": "configured"},
+    )
+
+    shell_argv = shlex.split(command)
+    assert shell_argv[:2] == ["bash", "-lc"]
+    script = shell_argv[2]
+    assert "export HTTP_PROXY=''" in script
+    assert "export LANGBOT_TEST_VALUE=configured" in script
+    assert script.index("export HTTP_PROXY='' ") < script.index("mkdir -p /workspace")
+
+
 class _CompletedAcpRequest:
     def __init__(self) -> None:
         self.future = asyncio.get_running_loop().create_future()
@@ -1163,8 +1182,13 @@ def test_claude_code_runner_defaults_to_non_interactive_permissions(tmp_path: Pa
     )
 
     assert config["dangerously_skip_permissions"] is True
-    argv = runner._argv(config, session_id="session-1", mcp_config_path="", resume=False)
+    argv = runner._argv(config, session_id="session-1", mcp_config_path="/tmp/mcp.json", resume=False)
     assert argv.count("--dangerously-skip-permissions") == 1
+    assert argv[argv.index("--allowedTools") + 1] == "ToolSearch,mcp__langbot_agent__*"
+    system_prompt = argv[argv.index("--append-system-prompt") + 1]
+    assert "ToolSearch-then-call flow" in system_prompt
+    assert "In coordinator mode" in system_prompt
+    assert "delegate the MCP request to one worker" in system_prompt
 
 
 def test_claude_code_runner_can_restore_interactive_permissions(tmp_path: Path) -> None:

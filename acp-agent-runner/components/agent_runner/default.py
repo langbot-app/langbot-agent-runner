@@ -157,17 +157,26 @@ def _remote_shell_command(
     remote_shell: str,
     workspace: str,
     acp_command: str,
+    env: dict[str, str] | None = None,
     unset_env: typing.Sequence[str] = (),
 ) -> str:
+    remote_env = dict(env or {})
     if remote_shell == "none":
         unset_prefix = " ".join(f"-u {_posix_quote(name)}" for name in unset_env)
-        return f"env {unset_prefix} {acp_command}" if unset_prefix else acp_command
+        env_prefix = " ".join(f"{_posix_quote(name)}={_posix_quote(value)}" for name, value in remote_env.items())
+        prefixes = " ".join(part for part in (unset_prefix, env_prefix) if part)
+        return f"env {prefixes} {acp_command}" if prefixes else acp_command
 
     if remote_shell == "powershell":
         script_parts = ["$ErrorActionPreference='Stop'"]
         script_parts.extend(
             f"Remove-Item Env:{name} -ErrorAction SilentlyContinue"
             for name in unset_env
+        )
+        script_parts.extend(
+            f"Set-Item -Path {_powershell_quote(f'Env:{name}')} -Value {_powershell_quote(value)}"
+            for name, value in remote_env.items()
+            if name not in unset_env
         )
         if workspace:
             quoted_workspace = _powershell_quote(workspace)
@@ -177,6 +186,11 @@ def _remote_shell_command(
         return f"powershell -NoProfile -ExecutionPolicy Bypass -Command {_posix_quote('; '.join(script_parts))}"
 
     script_parts = []
+    script_parts.extend(
+        f"export {_posix_quote(name)}={_posix_quote(value)}"
+        for name, value in remote_env.items()
+        if name not in unset_env
+    )
     if workspace:
         quoted_workspace = _posix_quote(workspace)
         script_parts.append(f"mkdir -p {quoted_workspace}")
@@ -563,6 +577,7 @@ class DefaultAgentRunner(AgentRunner):
                 remote_shell=config["remote_shell"],
                 workspace=config["workspace"],
                 acp_command=config["acp_command"],
+                env=config["env"],
                 unset_env=unset_env,
             )
         )

@@ -228,6 +228,15 @@ def _event_session_id(event: dict[str, typing.Any]) -> str:
 
 
 _MCP_CONFIG_ARG_PLACEHOLDER = "__LANGBOT_CLAUDE_MCP_CONFIG_PATH__"
+_LANGBOT_MCP_ALLOWED_TOOLS = "ToolSearch,mcp__langbot_agent__*"
+_LANGBOT_MCP_SYSTEM_PROMPT = (
+    "LangBot MCP tools may be deferred tools in Claude Code. When ToolSearch is available "
+    "in the current session, use it with select:<full_tool_name> before the first call to "
+    "any mcp__langbot_agent__* tool, then call that tool directly. In coordinator mode, "
+    "the main session may expose only delegation tools; delegate the MCP request to one "
+    "worker and require that worker to perform the same ToolSearch-then-call flow. Never "
+    "claim a LangBot tool result unless the direct or delegated tool call completed."
+)
 
 
 def _shell_join_with_mcp_placeholder(argv: list[str]) -> str:
@@ -496,8 +505,9 @@ class NativeClaudeCodeRunner(AgentRunner):
         argv = [*_parse_args(config["command"]), *config["args"], "-p", "--verbose", "--output-format", "stream-json"]
         if config.get("dangerously_skip_permissions", True) and "--dangerously-skip-permissions" not in argv:
             argv.append("--dangerously-skip-permissions")
-        argv.extend(["--allowedTools", "mcp__langbot_agent__ask_user_question"])
+        argv.extend(["--allowedTools", _LANGBOT_MCP_ALLOWED_TOOLS])
         if mcp_config_path:
+            argv.extend(["--append-system-prompt", _LANGBOT_MCP_SYSTEM_PROMPT])
             argv.extend(["--strict-mcp-config", "--mcp-config", mcp_config_path])
         if session_id:
             # `--session-id` only creates a new session; continuing an existing
@@ -720,8 +730,9 @@ class NativeClaudeCodeDaemon(AgentRuntimeDaemonClient):
             ]
             if config.get("dangerously_skip_permissions", True) and "--dangerously-skip-permissions" not in argv:
                 argv.append("--dangerously-skip-permissions")
-            argv.extend(["--allowedTools", "mcp__langbot_agent__ask_user_question"])
+            argv.extend(["--allowedTools", _LANGBOT_MCP_ALLOWED_TOOLS])
             if mcp_config_path:
+                argv.extend(["--append-system-prompt", _LANGBOT_MCP_SYSTEM_PROMPT])
                 argv.extend(["--strict-mcp-config", "--mcp-config", mcp_config_path])
             session_id = str(payload.get("session_id") or "")
             if session_id:
