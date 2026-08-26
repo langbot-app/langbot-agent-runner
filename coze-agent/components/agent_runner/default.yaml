@@ -40,6 +40,16 @@ spec:
           label:
             en_US: Coze Global
             zh_Hans: Coze 全球版
+    - name: advanced-settings
+      label:
+        en_US: Advanced Settings
+        zh_Hans: 高级设置
+      description:
+        en_US: Show history and timeout tuning controls.
+        zh_Hans: 显示历史和超时调优选项。
+      type: boolean
+      required: false
+      default: false
     - name: auto-save-history
       label:
         en_US: Auto Save History
@@ -47,6 +57,10 @@ spec:
       type: boolean
       required: false
       default: true
+      show_if:
+        field: advanced-settings
+        operator: eq
+        value: true
     - name: timeout
       label:
         en_US: Request Timeout
@@ -54,6 +68,10 @@ spec:
       type: number
       required: false
       default: 120
+      show_if:
+        field: advanced-settings
+        operator: eq
+        value: true
     - name: langbot-assets-enabled
       label:
         en_US: Enable LangBot Assets

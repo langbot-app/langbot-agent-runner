@@ -290,7 +290,7 @@ def test_runner_forms_hide_inactive_dependent_fields() -> None:
     }
 
 
-def test_complex_runner_forms_hide_advanced_fields_by_default() -> None:
+def test_runner_forms_hide_advanced_fields_by_default() -> None:
     advanced_condition = {
         "field": "advanced-settings",
         "operator": "eq",
@@ -332,6 +332,13 @@ def test_complex_runner_forms_hide_advanced_fields_by_default() -> None:
             "mcp-bridge-transport",
             "mcp-servers-json",
         },
+        "coze-agent": {"auto-save-history", "timeout"},
+        "dashscope-agent": {"references_quote", "timeout"},
+        "deerflow-agent": {"model-name", "timeout", "recursion-limit"},
+        "dify-agent": {"base-prompt", "timeout"},
+        "langflow-agent": {"input-type", "output-type", "tweaks"},
+        "n8n-agent": {"timeout", "output-key"},
+        "weknora-agent": {"timeout", "base-prompt"},
     }
 
     for plugin_dir, field_names in advanced_fields.items():

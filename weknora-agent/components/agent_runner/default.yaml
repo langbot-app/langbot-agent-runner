@@ -88,6 +88,16 @@ spec:
         field: app-type
         operator: eq
         value: agent
+    - name: advanced-settings
+      label:
+        en_US: Advanced Settings
+        zh_Hans: 高级设置
+      description:
+        en_US: Show timeout and fallback prompt controls.
+        zh_Hans: 显示超时和回退提示词调优选项。
+      type: boolean
+      required: false
+      default: false
     - name: timeout
       label:
         en_US: Timeout
@@ -98,6 +108,10 @@ spec:
       type: integer
       required: false
       default: 120
+      show_if:
+        field: advanced-settings
+        operator: eq
+        value: true
     - name: base-prompt
       label:
         en_US: Base Prompt
@@ -108,6 +122,10 @@ spec:
       type: string
       required: false
       default: '请回答用户的问题。'
+      show_if:
+        field: advanced-settings
+        operator: eq
+        value: true
   capabilities:
     streaming: true
     tool_calling: false

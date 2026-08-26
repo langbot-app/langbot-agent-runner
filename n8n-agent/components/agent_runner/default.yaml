@@ -107,6 +107,16 @@ spec:
         field: auth-type
         operator: eq
         value: header
+    - name: advanced-settings
+      label:
+        en_US: Advanced Settings
+        zh_Hans: 高级设置
+      description:
+        en_US: Show timeout and response mapping controls.
+        zh_Hans: 显示超时和响应映射调优选项。
+      type: boolean
+      required: false
+      default: false
     - name: timeout
       label:
         en_US: Timeout
@@ -114,6 +124,10 @@ spec:
       type: integer
       required: false
       default: 120
+      show_if:
+        field: advanced-settings
+        operator: eq
+        value: true
     - name: output-key
       label:
         en_US: Output Key
@@ -121,6 +135,10 @@ spec:
       type: string
       required: false
       default: 'response'
+      show_if:
+        field: advanced-settings
+        operator: eq
+        value: true
     - name: langbot-assets-enabled
       label:
         en_US: Enable LangBot Assets

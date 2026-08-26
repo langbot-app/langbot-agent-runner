@@ -40,6 +40,16 @@ spec:
       type: string
       required: true
       default: ''
+    - name: advanced-settings
+      label:
+        en_US: Advanced Settings
+        zh_Hans: 高级设置
+      description:
+        en_US: Show reference formatting and timeout tuning controls.
+        zh_Hans: 显示引用格式和超时调优选项。
+      type: boolean
+      required: false
+      default: false
     - name: references_quote
       label:
         en_US: References Quote
@@ -47,6 +57,10 @@ spec:
       type: string
       required: false
       default: '参考资料来自:'
+      show_if:
+        field: advanced-settings
+        operator: eq
+        value: true
     - name: timeout
       label:
         en_US: Timeout
@@ -54,6 +68,10 @@ spec:
       type: number
       required: false
       default: 120
+      show_if:
+        field: advanced-settings
+        operator: eq
+        value: true
     - name: langbot-assets-enabled
       label:
         en_US: Enable LangBot Assets

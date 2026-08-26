@@ -31,6 +31,16 @@ spec:
       type: string
       required: true
       default: ''
+    - name: advanced-settings
+      label:
+        en_US: Advanced Settings
+        zh_Hans: 高级设置
+      description:
+        en_US: Show input, output, and flow tweak controls.
+        zh_Hans: 显示输入、输出和流程 tweak 调优选项。
+      type: boolean
+      required: false
+      default: false
     - name: input-type
       label:
         en_US: Input Type
@@ -38,6 +48,10 @@ spec:
       type: string
       required: false
       default: 'chat'
+      show_if:
+        field: advanced-settings
+        operator: eq
+        value: true
     - name: output-type
       label:
         en_US: Output Type
@@ -45,6 +59,10 @@ spec:
       type: string
       required: false
       default: 'chat'
+      show_if:
+        field: advanced-settings
+        operator: eq
+        value: true
     - name: tweaks
       label:
         en_US: Tweaks
@@ -52,6 +70,10 @@ spec:
       type: json
       required: false
       default: '{}'
+      show_if:
+        field: advanced-settings
+        operator: eq
+        value: true
     - name: langbot-assets-enabled
       label:
         en_US: Enable LangBot Assets
