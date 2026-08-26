@@ -100,6 +100,10 @@ spec:
       type: integer
       required: false
       default: 3
+      show_if:
+        field: subagent-enabled
+        operator: eq
+        value: true
     - name: timeout
       label:
         en_US: Timeout
