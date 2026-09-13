@@ -1,3 +1,7 @@
+> **Moved:** Development continues in [Runner](https://github.com/langbot-app/langbot-plugins/tree/main/Runner) in `langbot-app/langbot-plugins`. Please submit changes and new issues there. This repository is retained for its history and existing issues.
+>
+> **已迁移：** 后续开发请前往 [langbot-plugins/Runner](https://github.com/langbot-app/langbot-plugins/tree/main/Runner)。本仓库保留历史记录和已有 Issue。
+
 # LangBot 官方运行器插件
 
 本仓库包含 LangBot 官方维护的外部服务运行器插件。每个插件负责把第三方智能体、工作流或应用平台接入 LangBot 运行器协议 v1。
